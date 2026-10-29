@@ -1,0 +1,10 @@
+.build/
+build/
+.swiftpm/
+.DS_Store
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.idea/
+.logs/
+Resources/AppIcon.icns
