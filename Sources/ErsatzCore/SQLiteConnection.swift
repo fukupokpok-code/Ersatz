@@ -6,6 +6,8 @@ public enum DatabaseError: Error, LocalizedError, Equatable {
     case sqlite(code: Int32, message: String)
     case duplicate(String)
     case unsupportedVersion(Int)
+    /// The library folder was removed while work for it was still running.
+    case folderRemoved(Int64)
 
     public var errorDescription: String? {
         switch self {
@@ -17,6 +19,8 @@ public enum DatabaseError: Error, LocalizedError, Equatable {
             return message
         case .unsupportedVersion(let version):
             return "This library was written by a newer version of Ersatz (schema \(version))."
+        case .folderRemoved:
+            return "That folder was removed from the library."
         }
     }
 }
@@ -64,14 +68,14 @@ final class SQLiteConnection {
         try execute("PRAGMA foreign_keys = ON")
         try execute("PRAGMA journal_mode = WAL")
         try execute("PRAGMA busy_timeout = 5000")
-        let version = try pragmaInt("user_version")
-        if version > 2 {
+        var version = try pragmaInt("user_version")
+        if version > Schema.version {
             throw DatabaseError.unsupportedVersion(version)
         }
         if version == 0 {
             try transaction {
                 try execute(Schema.create)
-                try execute("PRAGMA user_version = 2")
+                try execute("PRAGMA user_version = \(Schema.version)")
             }
             return
         }
@@ -80,7 +84,33 @@ final class SQLiteConnection {
                 try execute(Schema.upgradeToV2)
                 try execute("PRAGMA user_version = 2")
             }
+            version = 2
         }
+        if version == 2 {
+            // Adds a column only; every existing row and cached result is kept.
+            try transaction {
+                try execute(Schema.upgradeToV3)
+                try execute("PRAGMA user_version = 3")
+            }
+            version = 3
+        }
+        if version == 3 {
+            // Round 8 replaced the blur score and made QR and bank slip detection read
+            // larger images. Those three results are marked stale so they are measured
+            // again when a filter asks; old QR and slip values stay visible until then.
+            try transaction {
+                try execute(Schema.upgradeToV4)
+                try execute("PRAGMA user_version = 4")
+            }
+        }
+    }
+
+    func columnNames(_ table: String) throws -> [String] {
+        var names: [String] = []
+        try query("PRAGMA table_info(\(table))") { statement in
+            names.append(statement.text(1))
+        }
+        return names
     }
 
     func execute(_ sql: String) throws {
@@ -279,6 +309,8 @@ final class Statement {
 }
 
 enum Schema {
+    static let version = 4
+
     static let create = """
     CREATE TABLE IF NOT EXISTS folders (
         id INTEGER PRIMARY KEY,
@@ -328,7 +360,8 @@ enum Schema {
         is_screenshot INTEGER NOT NULL DEFAULT 0,
         has_qr INTEGER NOT NULL DEFAULT 0,
         is_bank_slip INTEGER NOT NULL DEFAULT 0,
-        analyzed_mtime INTEGER
+        analyzed_mtime INTEGER,
+        analyzed_parts INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS checkpoints (
@@ -408,5 +441,18 @@ enum Schema {
         restorable INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at);
+    """
+
+    /// v3: analysis is done per part (hashes, blur, QR, text, screenshot) and only when
+    /// a smart filter or Analyze Library asks for it. Rows analyzed before v3 ran every part.
+    static let upgradeToV3 = """
+    ALTER TABLE analysis ADD COLUMN analyzed_parts INTEGER NOT NULL DEFAULT 0;
+    UPDATE analysis SET analyzed_parts = 63 WHERE analyzed_mtime IS NOT NULL;
+    """
+
+    /// Clears the sharpness (8), QR (16) and bank slip (32) bits. Old sharpness values
+    /// are on a different scale, so they go; QR and slip results stay until re-measured.
+    static let upgradeToV4 = """
+    UPDATE analysis SET analyzed_parts = analyzed_parts & ~56, sharpness = NULL;
     """
 }

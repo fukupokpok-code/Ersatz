@@ -41,18 +41,32 @@ extension MediaDatabase {
         }
     }
 
-    public func pendingAnalysis(limit: Int = 50_000) throws -> [PendingAnalysis] {
+    /// Items still missing any of `parts`, or whose file changed since it was analyzed.
+    /// Results are cached per part, so asking again for done work returns nothing.
+    /// `scope` limits it to one library, so a smart filter shown for a 6-file library
+    /// analyzes those 6 files, not the whole catalog.
+    public func pendingAnalysis(parts: AnalysisParts = .all, limit: Int = 50_000, scope: LibraryScope? = nil) throws -> [PendingAnalysis] {
         var rows: [PendingAnalysis] = []
+        guard !parts.isEmpty else { return rows }
+        // For QR and bank slips, files without a camera model (screenshots, saved slips)
+        // go first: that is where nearly all slips are, so the filter fills in fast.
+        let order = parts.isDisjoint(with: [.qr, .bankSlip])
+            ? "media.id"
+            : "(media.camera_model IS NOT NULL), media.id"
+        let scopeSQL = LibraryScope.sql(for: scope)
         try connection.query(
             """
             SELECT media.id, media.path, media.filename, media.kind, media.file_size, media.modified_at,
                    media.format_name, media.pixel_width, media.pixel_height, media.camera_model
             FROM media
             LEFT JOIN analysis ON analysis.media_id = media.id
-            WHERE analysis.media_id IS NULL OR analysis.analyzed_mtime != media.modified_at
+            WHERE (analysis.media_id IS NULL
+               OR analysis.analyzed_mtime IS NOT media.modified_at
+               OR (analysis.analyzed_parts & ?) != ?)\(scopeSQL.clause)
+            ORDER BY \(order)
             LIMIT ?
             """,
-            [.int(Int64(limit))]
+            [.int(parts.rawValue), .int(parts.rawValue)] + scopeSQL.binds + [.int(Int64(limit))]
         ) { statement in
             guard let kind = MediaType(rawValue: statement.text(3)) else { return }
             rows.append(PendingAnalysis(
@@ -73,19 +87,31 @@ extension MediaDatabase {
 
     public func saveAnalysis(_ updates: [AnalysisUpdate]) throws {
         guard !updates.isEmpty else { return }
+        // Only the measured parts overwrite columns; other parts keep their cached values
+        // unless the file changed. Rows for media removed meanwhile are skipped, never
+        // inserted, so a folder removal during analysis can't trip the foreign key.
+        func keep(_ column: String, _ bit: AnalysisParts, empty: String = "NULL") -> String {
+            """
+            \(column) = CASE WHEN excluded.analyzed_parts & \(bit.rawValue) THEN excluded.\(column) \
+            WHEN analysis.analyzed_mtime IS excluded.analyzed_mtime THEN analysis.\(column) ELSE \(empty) END
+            """
+        }
         let sql = """
         INSERT INTO analysis (
             media_id, partial_hash, content_hash, perceptual_hash, sharpness,
-            is_screenshot, has_qr, is_bank_slip, analyzed_mtime
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            is_screenshot, has_qr, is_bank_slip, analyzed_mtime, analyzed_parts
+        ) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10
+        WHERE EXISTS (SELECT 1 FROM media WHERE id = ?1)
         ON CONFLICT(media_id) DO UPDATE SET
-            partial_hash = excluded.partial_hash,
-            content_hash = excluded.content_hash,
-            perceptual_hash = excluded.perceptual_hash,
-            sharpness = excluded.sharpness,
-            is_screenshot = excluded.is_screenshot,
-            has_qr = excluded.has_qr,
-            is_bank_slip = excluded.is_bank_slip,
+            \(keep("partial_hash", .hashes)),
+            \(keep("content_hash", .hashes)),
+            \(keep("perceptual_hash", .perceptual)),
+            \(keep("sharpness", .sharpness)),
+            \(keep("is_screenshot", .screenshot, empty: "0")),
+            \(keep("has_qr", .qr, empty: "0")),
+            \(keep("is_bank_slip", .bankSlip, empty: "0")),
+            analyzed_parts = excluded.analyzed_parts | CASE
+                WHEN analysis.analyzed_mtime IS excluded.analyzed_mtime THEN analysis.analyzed_parts ELSE 0 END,
             analyzed_mtime = excluded.analyzed_mtime
         """
         try connection.transaction {
@@ -99,19 +125,41 @@ extension MediaDatabase {
                     .int(update.isScreenshot ? 1 : 0),
                     .int(update.hasQR ? 1 : 0),
                     .int(update.isBankSlip ? 1 : 0),
-                    .int(update.analyzedMTime)
+                    .int(update.analyzedMTime),
+                    .int(update.parts.rawValue)
                 ])
             }
         }
     }
 
-    public func hashRecords() throws -> [HashRecord] {
+    /// How many indexed files share each byte size, library-wide. Duplicate hashing
+    /// reads whole files only when a size has more than one file.
+    public func fileSizeCounts() throws -> [Int64: Int] {
+        var counts: [Int64: Int] = [:]
+        try connection.query("SELECT file_size, COUNT(*) FROM media GROUP BY file_size") { statement in
+            counts[statement.int(0)] = Int(statement.int(1))
+        }
+        return counts
+    }
+
+    public func analyzedParts(mediaID: Int64) throws -> AnalysisParts? {
+        var parts: AnalysisParts?
+        try connection.query("SELECT analyzed_parts FROM analysis WHERE media_id = ?", [.int(mediaID)]) { statement in
+            parts = AnalysisParts(rawValue: statement.int(0))
+        }
+        return parts
+    }
+
+    public func hashRecords(scope: LibraryScope? = nil) throws -> [HashRecord] {
         var rows: [HashRecord] = []
+        let scopeSQL = LibraryScope.sql(for: scope)
         try connection.query(
             """
             SELECT media.id, media.file_size, analysis.content_hash, analysis.perceptual_hash
             FROM media JOIN analysis ON analysis.media_id = media.id
-            """
+            WHERE 1 = 1\(scopeSQL.clause)
+            """,
+            scopeSQL.binds
         ) { statement in
             rows.append(HashRecord(
                 id: statement.int(0),
@@ -166,6 +214,14 @@ extension MediaDatabase {
             }
         }
         return Checkpoint(id: id, createdAt: date, action: action, fileCount: files.count, note: note)
+    }
+
+    /// Where a trashed file went, so History > Restore can move it back.
+    public func recordTrashURL(checkpointID: Int64, path: String, trashURL: String) throws {
+        try connection.run(
+            "UPDATE checkpoint_files SET trash_url = ? WHERE checkpoint_id = ? AND path = ?",
+            [.text(trashURL), .int(checkpointID), .text(path)]
+        )
     }
 
     public func checkpoints() throws -> [Checkpoint] {

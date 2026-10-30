@@ -34,6 +34,7 @@ public enum FormatNames {
         "rw2": "RW2", "pef": "PEF", "srw": "SRW", "x3f": "X3F",
         "mov": "QuickTime", "mp4": "MP4", "m4v": "MP4", "avi": "AVI",
         "mkv": "MKV", "mpg": "MPEG", "mpeg": "MPEG", "webm": "WebM",
+        "flv": "FLV", "wmv": "WMV",
         "m4a": "M4A", "mp3": "MP3", "wav": "WAV", "aif": "AIFF", "aiff": "AIFF",
         "aifc": "AIFF", "flac": "FLAC", "aac": "AAC", "ogg": "Ogg", "caf": "CAF"
     ]

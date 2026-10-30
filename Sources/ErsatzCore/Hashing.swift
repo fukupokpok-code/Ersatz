@@ -275,17 +275,34 @@ public enum BankSlipClassifier {
         "โอนเงินสำเร็จ", "จำนวนเงิน", "ค่าธรรมเนียม", "เลขที่รายการ",
         "กสิกร", "k plus", "kplus", "scb", "กรุงเทพ", "กรุงไทย", "krungthai",
         "ttb", "กรุงศรี", "promptpay", "พร้อมเพย์", "พร้อมเพย", "transfer successful",
-        "amount", "fee", "reference"
+        "amount", "fee", "reference",
+        // Round 8: phrases Thai bank apps print that the first list missed.
+        "ทำรายการสำเร็จ", "ชำระเงินสำเร็จ", "จ่ายบิลสำเร็จ", "เติมเงินสำเร็จ", "รหัสอ้างอิง",
+        "เลขที่อ้างอิง", "สแกนตรวจสอบสลิป", "ตรวจสอบสลิป", "ออมสิน", "ธนาคาร", "ไทยพาณิชย์",
+        "kbank", "krungsri", "bualuang", "make by kbank", "mymo", "paotang", "เป๋าตัง",
+        "transaction id", "ref no", "successful"
     ]
 
     /// A slip usually has a QR plus at least two banking phrases, or three phrases without one.
+    /// Text recognition often splits Thai words with spaces, so matching ignores whitespace.
     public static func isSlip(text: String, hasQR: Bool) -> Bool {
-        let folded = text.lowercased()
+        let folded = squeezed(text)
         let hits = keywords.reduce(into: 0) { count, word in
-            if folded.contains(word.lowercased()) { count += 1 }
+            if folded.contains(squeezed(word)) { count += 1 }
         }
         if hasQR && hits >= 2 { return true }
         return hits >= 3
+    }
+
+    /// Text recognition is the slow step, so it runs only where a slip is plausible:
+    /// a QR was found (Thai slips carry a verification QR), or the image did not come
+    /// from a camera (screenshots and saved slips have no camera model).
+    public static func shouldReadText(hasQR: Bool, hasCameraModel: Bool) -> Bool {
+        hasQR || !hasCameraModel
+    }
+
+    private static func squeezed(_ text: String) -> String {
+        String(text.lowercased().unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) }.map(Character.init))
     }
 }
 

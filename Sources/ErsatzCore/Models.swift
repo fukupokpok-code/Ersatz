@@ -310,7 +310,7 @@ public struct MediaQuery: Sendable, Equatable {
         qrOnly: Bool = false,
         bankSlipsOnly: Bool = false,
         blurryOnly: Bool = false,
-        blurryThreshold: Double = 50,
+        blurryThreshold: Double = Double(BlurDetector.defaultThreshold),
         correctedDatesOnly: Bool = false
     ) {
         self.folderID = folderID
@@ -325,6 +325,61 @@ public struct MediaQuery: Sendable, Equatable {
         self.blurryOnly = blurryOnly
         self.blurryThreshold = blurryThreshold
         self.correctedDatesOnly = correctedDatesOnly
+    }
+}
+
+/// The library (or a folder inside it) the sidebar's Date Taken, Type and Smart views are
+/// limited to. Picking a library in the sidebar sets it; All Media clears it.
+public struct LibraryScope: Sendable, Equatable, Hashable {
+    public var folderID: Int64
+    /// A sub-folder, relative to the library root. Nil is the whole library.
+    public var directory: String?
+
+    public init(folderID: Int64, directory: String? = nil) {
+        self.folderID = folderID
+        self.directory = directory
+    }
+
+    /// `media` rows in the scope, as SQL with its bind values. `table` qualifies the columns.
+    func sql(table: String = "media") -> (clause: String, binds: [SQLValue]) {
+        var clause = " AND \(table).folder_id = ?"
+        var binds: [SQLValue] = [.int(folderID)]
+        if let directory, !directory.isEmpty {
+            clause += " AND (\(table).parent_relative = ? OR \(table).parent_relative LIKE ? ESCAPE '\\')"
+            binds.append(.text(directory))
+            binds.append(.text(LibraryScope.likePrefix(directory)))
+        }
+        return (clause, binds)
+    }
+
+    /// `sql()` for an optional scope: no clause when there is none.
+    static func sql(for scope: LibraryScope?, table: String = "media") -> (clause: String, binds: [SQLValue]) {
+        scope?.sql(table: table) ?? (clause: "", binds: [])
+    }
+
+    static func likePrefix(_ prefix: String) -> String {
+        var escaped = ""
+        for character in prefix {
+            if character == "\\" || character == "%" || character == "_" {
+                escaped.append("\\")
+            }
+            escaped.append(character)
+        }
+        escaped.append("/%")
+        return escaped
+    }
+}
+
+extension MediaQuery {
+    /// The query limited to `scope`. A query that already names a folder keeps it.
+    public func scoped(to scope: LibraryScope?) -> MediaQuery {
+        guard let scope, folderID == nil else { return self }
+        var query = self
+        query.folderID = scope.folderID
+        if let directory = scope.directory, !directory.isEmpty {
+            query.directoryPrefix = directory
+        }
+        return query
     }
 }
 

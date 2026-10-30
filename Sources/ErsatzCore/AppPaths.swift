@@ -14,6 +14,15 @@ public enum AppPaths {
     }
 
     public static func thumbnailCacheURL(fileManager: FileManager = .default) throws -> URL {
+        try cacheDirectory("Thumbnails", fileManager: fileManager)
+    }
+
+    /// Remuxed and transcoded playback files. Originals are never written here.
+    public static func playbackCacheURL(fileManager: FileManager = .default) throws -> URL {
+        try cacheDirectory("Playback", fileManager: fileManager)
+    }
+
+    private static func cacheDirectory(_ name: String, fileManager: FileManager) throws -> URL {
         let base = try fileManager.url(
             for: .cachesDirectory,
             in: .userDomainMask,
@@ -22,7 +31,7 @@ public enum AppPaths {
         )
         let directory = base
             .appendingPathComponent("Ersatz", isDirectory: true)
-            .appendingPathComponent("Thumbnails", isDirectory: true)
+            .appendingPathComponent(name, isDirectory: true)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }

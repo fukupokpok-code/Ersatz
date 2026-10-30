@@ -8,6 +8,7 @@ struct ContentView: View {
 
     var body: some View {
         @Bindable var model = model
+        let viewing = model.viewerPresented && model.currentItem != nil
         ZStack {
             if model.isReady {
                 NavigationSplitView(columnVisibility: .constant(.doubleColumn)) {
@@ -17,9 +18,9 @@ struct ContentView: View {
                     BrowserView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .opacity(model.viewerPresented ? 0 : 1)
-                .allowsHitTesting(!model.viewerPresented)
-                if model.viewerPresented, let item = model.currentItem {
+                .opacity(viewing ? 0 : 1)
+                .allowsHitTesting(!viewing)
+                if viewing, let item = model.currentItem {
                     ViewerView(item: item)
                 }
             } else {
@@ -27,8 +28,47 @@ struct ContentView: View {
                     .controlSize(.large)
             }
         }
+        .background {
+            WindowReader { window in
+                model.hostWindow = window
+                WindowKeeper.rescue(window)
+            }
+            .frame(width: 0, height: 0)
+        }
         .task { await model.start() }
         .onAppear { model.installKeys() }
+        .fileImporter(
+            isPresented: $model.showFolderPicker,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: true
+        ) { result in
+            model.finishPicking(result)
+        } onCancellation: {
+            model.folderPickerCancelled()
+        }
+        .fileDialogMessage("Choose a folder of photos, video, or audio.")
+        .fileDialogConfirmationLabel("Add Folder")
+        .onChange(of: model.viewerPresented && model.currentItem == nil) { _, orphaned in
+            if orphaned {
+                AppLog.viewer.notice("closeViewer: current item disappeared")
+                model.closeViewer()
+            }
+        }
+        .onChange(of: model.showError) { _, shown in
+            if shown { AppLog.ui.notice("alert: \(model.errorMessage ?? "", privacy: .public)") }
+        }
+        .onChange(of: model.pendingRemoval != nil) { _, shown in
+            if shown { AppLog.ui.info("dialog: remove folder") }
+        }
+        .onChange(of: model.showHistory) { _, shown in
+            AppLog.ui.info("sheet: History \(shown ? "shown" : "closed", privacy: .public)")
+        }
+        .onChange(of: model.showBuddhistConfirm) { _, shown in
+            if shown { AppLog.ui.info("dialog: Buddhist-era dates") }
+        }
+        .onChange(of: model.showTrashConfirm) { _, shown in
+            if shown { AppLog.ui.info("dialog: move \(model.trashCandidates.count, privacy: .public) files to Trash") }
+        }
         .alert("Something went wrong", isPresented: $model.showError) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -51,8 +91,13 @@ struct ContentView: View {
         } message: {
             Text("The files stay where they are. Ersatz only forgets the folder.")
         }
-        .onChange(of: model.filter) { _, _ in
-            Task { await model.reloadItems() }
+        .onChange(of: model.filter) { _, location in
+            model.recordNavigation(location)
+            // Sets the library scope first, so the reload below shows only that library.
+            model.filterDidChange()
+            Task {
+                await model.reloadItems()
+            }
         }
         .onChange(of: model.sortKey) { _, _ in model.resort() }
         .onChange(of: model.sortDirection) { _, _ in model.resort() }
@@ -77,12 +122,12 @@ struct ContentView: View {
             Text("Ersatz will store the original date in History first. Files whose metadata cannot be updated in place get an XMP sidecar. Nothing is changed until you confirm.")
         }
         .confirmationDialog(
-            "Move \(model.trashCandidates.count) files to the Trash?",
+            model.trashTitle,
             isPresented: $model.showTrashConfirm,
             titleVisibility: .visible
         ) {
             Button("Move to Trash", role: .destructive) {
-                Task { await model.trashDuplicates() }
+                Task { await model.trashConfirmed() }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -105,7 +150,7 @@ struct SidebarView: View {
                     FolderBlock(folder: folder)
                 }
             }
-            Section("Date Taken") {
+            Section(model.sectionTitle("Date Taken")) {
                 ForEach(model.yearGroups) { year in
                     DisclosureGroup {
                         ForEach(year.months, id: \.self) { bucket in
@@ -125,14 +170,14 @@ struct SidebarView: View {
                         .tag(LibraryFilter.unknownDate)
                 }
             }
-            Section("Type") {
+            Section(model.sectionTitle("Type")) {
                 ForEach(MediaType.allCases, id: \.self) { kind in
                     Label(kind.pluralTitle, systemImage: kind.symbolName)
                         .badge(model.kindCounts[kind] ?? 0)
                         .tag(LibraryFilter.kind(kind))
                 }
             }
-            Section("Smart") {
+            Section(model.sectionTitle("Smart")) {
                 Label("Duplicates", systemImage: "square.on.square")
                     .badge(model.duplicateCount)
                     .tag(LibraryFilter.duplicates)

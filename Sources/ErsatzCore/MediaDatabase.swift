@@ -50,8 +50,46 @@ public actor MediaDatabase {
         )
     }
 
+    /// Removes a library folder and everything indexed under it in one transaction,
+    /// children first, so it never depends on the cascade of an older schema.
+    /// Checkpoints and activity are keyed by path, not by folder, so History keeps them.
     public func removeFolder(id: Int64) throws {
-        try connection.run("DELETE FROM folders WHERE id = ?", [.int(id)])
+        try connection.transaction {
+            try connection.run(
+                "DELETE FROM analysis WHERE media_id IN (SELECT id FROM media WHERE folder_id = ?)",
+                [.int(id)]
+            )
+            try connection.run("DELETE FROM media WHERE folder_id = ?", [.int(id)])
+            try connection.run("DELETE FROM folders WHERE id = ?", [.int(id)])
+        }
+    }
+
+    /// Forgets files the user moved to the Trash from Ersatz: their analysis first, then
+    /// the media rows, in one transaction. Returns how many media rows went away.
+    @discardableResult
+    public func removeMedia(ids: [Int64]) throws -> Int {
+        guard !ids.isEmpty else { return 0 }
+        var removed = 0
+        try connection.transaction {
+            for id in Set(ids) {
+                try connection.run("DELETE FROM analysis WHERE media_id = ?", [.int(id)])
+                removed += try connection.run("DELETE FROM media WHERE id = ?", [.int(id)])
+            }
+        }
+        return removed
+    }
+
+    /// Rows that break a foreign key (PRAGMA foreign_key_check). Zero in a healthy library.
+    public func foreignKeyViolationCount() throws -> Int {
+        var count = 0
+        try connection.query("PRAGMA foreign_key_check") { _ in count += 1 }
+        return count
+    }
+
+    public func folderExists(id: Int64) throws -> Bool {
+        var found = false
+        try connection.query("SELECT 1 FROM folders WHERE id = ?", [.int(id)]) { _ in found = true }
+        return found
     }
 
     public func folders() throws -> [LibraryFolder] {
@@ -121,6 +159,13 @@ public actor MediaDatabase {
         """
         let indexedAt = Timestamp.milliseconds(Date())
         try connection.transaction {
+            // An index run can outlive its folder: Remove Folder may land between two
+            // batches. Stop with a clear error instead of SQLite's foreign key failure.
+            for folderID in Set(items.map(\.folderID)) {
+                if try !folderExists(id: folderID) {
+                    throw DatabaseError.folderRemoved(folderID)
+                }
+            }
             for item in items {
                 let taken = item.dateTaken
                 let parts = taken.flatMap { CalendarParts.yearMonth(of: $0) }
@@ -223,11 +268,14 @@ public actor MediaDatabase {
         return items
     }
 
-    public func summary() throws -> LibrarySummary {
+    /// Sidebar counts. `scope` limits the Date Taken, Type and Smart counts to one library;
+    /// the Library section (folders, totals, sub-folder trees) always covers everything.
+    public func summary(scope: LibraryScope? = nil) throws -> LibrarySummary {
+        let (where_, binds) = LibraryScope.sql(for: scope)
         let total = try count("SELECT COUNT(*) FROM media")
-        let unknown = try count("SELECT COUNT(*) FROM media WHERE taken_year IS NULL")
+        let unknown = try count("SELECT COUNT(*) FROM media WHERE taken_year IS NULL" + where_, binds)
         var kinds: [MediaType: Int] = [:]
-        try connection.query("SELECT kind, COUNT(*) FROM media GROUP BY kind") { statement in
+        try connection.query("SELECT kind, COUNT(*) FROM media WHERE 1 = 1\(where_) GROUP BY kind", binds) { statement in
             if let kind = MediaType(rawValue: statement.text(0)) {
                 kinds[kind] = Int(statement.int(1))
             }
@@ -237,16 +285,18 @@ public actor MediaDatabase {
             """
             SELECT taken_year, taken_month, COUNT(*)
             FROM media
-            WHERE taken_year IS NOT NULL AND taken_month IS NOT NULL
+            WHERE taken_year IS NOT NULL AND taken_month IS NOT NULL\(where_)
             GROUP BY taken_year, taken_month
-            """
+            """,
+            binds
         ) { statement in
             dates.append(DateBucket(year: Int(statement.int(0)), month: Int(statement.int(1)), count: Int(statement.int(2))))
         }
-        let screenshots = try count("SELECT COUNT(*) FROM analysis WHERE is_screenshot = 1")
-        let qr = try count("SELECT COUNT(*) FROM analysis WHERE has_qr = 1")
-        let slips = try count("SELECT COUNT(*) FROM analysis WHERE is_bank_slip = 1")
-        let buddhist = try count("SELECT COUNT(*) FROM media WHERE date_corrected = 1")
+        let analyzed = "SELECT COUNT(*) FROM analysis JOIN media ON media.id = analysis.media_id WHERE "
+        let screenshots = try count(analyzed + "analysis.is_screenshot = 1" + where_, binds)
+        let qr = try count(analyzed + "analysis.has_qr = 1" + where_, binds)
+        let slips = try count(analyzed + "analysis.is_bank_slip = 1" + where_, binds)
+        let buddhist = try count("SELECT COUNT(*) FROM media WHERE date_corrected = 1" + where_, binds)
         let folders = try folders()
         var folderCounts: [Int64: Int] = [:]
         try connection.query("SELECT folder_id, COUNT(*) FROM media GROUP BY folder_id") { statement in
@@ -275,9 +325,9 @@ public actor MediaDatabase {
         )
     }
 
-    private func count(_ sql: String) throws -> Int {
+    private func count(_ sql: String, _ binds: [SQLValue] = []) throws -> Int {
         var value = 0
-        try connection.query(sql) { statement in
+        try connection.query(sql, binds) { statement in
             value = Int(statement.int(0))
         }
         return value

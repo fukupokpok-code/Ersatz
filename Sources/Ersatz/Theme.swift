@@ -12,7 +12,24 @@ enum ViewMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-enum LibraryFilter: Hashable {
+/// A running smart-filter or Analyze Library pass, shown with a Stop button.
+struct AnalysisStatus: Equatable {
+    var parts: AnalysisParts
+    var title: String
+    var done: Int
+    var total: Int
+
+    init(demand: AnalysisDemand, done: Int, total: Int) {
+        parts = demand.parts
+        title = demand.title
+        self.done = done
+        self.total = total
+    }
+
+    var fraction: Double? { total > 0 ? Double(done) / Double(total) : nil }
+}
+
+enum LibraryFilter: Hashable, Sendable {
     case all
     case folder(Int64, directory: String?)
     case year(Int)
@@ -25,6 +42,18 @@ enum LibraryFilter: Hashable {
     case blurry
     case duplicates
     case buddhistDates
+
+    /// What this filter needs analyzed before it can show anything. Empty for plain places.
+    var analysisParts: AnalysisParts {
+        switch self {
+        case .screenshots: return .screenshot
+        case .qrCodes: return .qr
+        case .bankSlips: return [.qr, .bankSlip]
+        case .blurry: return .sharpness
+        case .duplicates: return .duplicates
+        default: return []
+        }
+    }
 
     var query: MediaQuery {
         var query = MediaQuery()

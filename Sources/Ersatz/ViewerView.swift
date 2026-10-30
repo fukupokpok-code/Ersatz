@@ -10,7 +10,8 @@ struct ViewerView: View {
     let item: MediaItem
     @State private var image: NSImage?
     @State private var actualPixels = false
-    @State private var player: AVPlayer?
+    @State private var loadFailed = false
+    @State private var attempt = 0
 
     var body: some View {
         ZStack {
@@ -18,20 +19,55 @@ struct ViewerView: View {
             Group {
                 switch item.kind {
                 case .video:
-                    if let player {
-                        VideoSurface(player: player)
+                    if case .ready(let url) = model.viewerPlayback {
+                        VideoPlayerHost(url: url) {
+                            model.fallBackToFFmpeg(item)
+                        }
+                    } else {
+                        VideoStatus(playback: model.viewerPlayback, progress: model.playbackProgress) {
+                            model.prepareViewerVideo(item)
+                        } onCancel: {
+                            model.cancelViewerPlayback()
+                        }
                     }
                 case .audio:
                     AudioPane(item: item)
                 case .photo, .raw:
                     if let image {
-                        PhotoCanvasView(image: image, actualPixels: actualPixels)
+                        PhotoCanvasView(image: image, actualPixels: actualPixels, menuItems: [
+                            PhotoCanvasMenuItem(title: "Show in Finder") { model.reveal(item) },
+                            PhotoCanvasMenuItem(title: "Move to Trash…") { model.confirmTrash([item]) }
+                        ])
+                    } else if loadFailed {
+                        VStack(spacing: 12) {
+                            Image(systemName: "photo.badge.exclamationmark")
+                                .font(.system(size: 40))
+                            Text("Ersatz could not open this image.")
+                                .font(.headline)
+                            Text(item.path)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.white.opacity(0.7))
+                                .lineLimit(2)
+                                .truncationMode(.middle)
+                                .frame(maxWidth: 520)
+                            HStack {
+                                Button("Try Again") { attempt += 1 }
+                                Button("Show in Finder") { model.reveal(item) }
+                                Button("Back") { model.closeViewer() }
+                            }
+                        }
+                        .foregroundStyle(.white)
                     } else {
                         ProgressView()
                             .controlSize(.large)
                             .tint(.white)
                     }
                 }
+            }
+            .contextMenu {
+                Button("Show in Finder") { model.reveal(item) }
+                Divider()
+                Button("Move to Trash…", role: .destructive) { model.confirmTrash([item]) }
             }
             .padding(.top, 48)
             .padding(.bottom, 92)
@@ -49,18 +85,15 @@ struct ViewerView: View {
                 }
             }
         }
-        .task(id: "\(item.id)-\(actualPixels)") {
+        .task(id: "\(item.id)-\(actualPixels)-\(attempt)") {
             await loadStill()
         }
         .onChange(of: item.id) { _, _ in
             actualPixels = false
-            configurePlayback()
+            model.prepareViewerVideo(item)
         }
-        .onAppear { configurePlayback() }
-        .onDisappear {
-            player?.pause()
-            player = nil
-        }
+        .onAppear { model.prepareViewerVideo(item) }
+        .onDisappear { model.stopViewerPlayback() }
     }
 
     private var header: some View {
@@ -79,7 +112,7 @@ struct ViewerView: View {
                 Text(item.filename)
                     .font(.headline)
                     .lineLimit(1)
-                Text(subtitle)
+                Text(model.viewerScopeLabel.map { "\($0)   \(subtitle)" } ?? subtitle)
                     .font(.caption.monospaced())
                     .foregroundStyle(.white.opacity(0.7))
                     .lineLimit(1)
@@ -90,6 +123,13 @@ struct ViewerView: View {
                     actualPixels.toggle()
                 }
             }
+            Button {
+                model.confirmTrash([item])
+            } label: {
+                Image(systemName: "trash")
+            }
+            .help("Move to Trash…")
+            .accessibilityLabel("Move to Trash")
             Button {
                 model.showInfo.toggle()
             } label: {
@@ -126,11 +166,13 @@ struct ViewerView: View {
         .background(.black.opacity(0.55))
     }
 
+    /// Ten either side of the current item, within the duplicate set when the viewer
+    /// was opened from Duplicates.
     private var nearby: [MediaItem] {
-        guard let index = model.items.firstIndex(where: { $0.id == item.id }) else { return [item] }
-        let lower = max(0, index - 10)
-        let upper = min(model.items.count, index + 11)
-        return Array(model.items[lower..<upper])
+        let ids = ViewerSequence.window(model.viewerSequenceIDs, around: item.id, radius: 10)
+        guard !ids.isEmpty else { return [item] }
+        let byID = Dictionary(model.items.lazy.filter { ids.contains($0.id) }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return ids.compactMap { byID[$0] }
     }
 
     private func loadStill() async {
@@ -139,18 +181,146 @@ struct ViewerView: View {
             return
         }
         image = nil
+        loadFailed = false
         let pixels = actualPixels ? 8192 : 3200
         let loaded = await model.viewerImage(for: item, maxPixel: pixels)
-        if !Task.isCancelled { image = loaded }
+        guard !Task.isCancelled else { return }
+        image = loaded
+        loadFailed = loaded == nil
     }
 
-    private func configurePlayback() {
-        player?.pause()
-        player = nil
-        guard item.kind == .video else { return }
-        let next = AVPlayer(url: URL(fileURLWithPath: item.path))
-        player = next
-        next.play()
+}
+
+private struct VideoStatus: View {
+    let playback: ViewerPlayback
+    let progress: PlaybackProgress?
+    let retry: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(spacing: 14) {
+            switch playback {
+            case .idle, .checking, .ready:
+                ProgressView("Opening…")
+                    .controlSize(.large)
+            case .working:
+                working
+            case .needsFFmpeg:
+                installGuide
+            case .failed(let message):
+                Text(message)
+                    .font(.callout)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+                Button("Try Again", action: retry)
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.safelight)
+            }
+        }
+        .foregroundStyle(.white)
+        .tint(.white)
+        .padding(24)
+    }
+
+    @ViewBuilder
+    private var working: some View {
+        let stage = progress?.stage ?? .probing
+        VStack(spacing: 12) {
+            switch stage {
+            case .probing:
+                ProgressView("Reading codecs…")
+            case .remuxing:
+                if let fraction = progress?.fraction {
+                    ProgressView(value: fraction, total: 1.0) {
+                        Text("Remuxing…")
+                    }
+                    .frame(width: 280)
+                } else {
+                    ProgressView("Remuxing…")
+                }
+            case .transcoding:
+                if let fraction = progress?.fraction {
+                    ProgressView(value: fraction, total: 1.0) {
+                        Text("Transcoding…")
+                    }
+                    .frame(width: 280)
+                } else {
+                    ProgressView("Transcoding…")
+                }
+            }
+            Button("Cancel", action: onCancel)
+                .buttonStyle(.bordered)
+        }
+    }
+
+    private var installGuide: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("ffmpeg is not installed")
+                .font(.headline)
+            Text(FFmpegInstallGuide.summary)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(FFmpegInstallGuide.brewCommand)
+                .font(.body.monospaced())
+                .textSelection(.enabled)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+            SettingsLink {
+                Text("Open Settings")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.safelight)
+        }
+        .frame(maxWidth: 460)
+    }
+}
+
+private struct VideoPlayerHost: View {
+    let url: URL
+    let onFailed: () -> Void
+    @State private var player: AVPlayer?
+
+    var body: some View {
+        Group {
+            if let player {
+                VideoSurface(player: player)
+            } else {
+                ProgressView("Opening…")
+                    .controlSize(.large)
+                    .tint(.white)
+            }
+        }
+        .task(id: url) {
+            let asset = AVURLAsset(url: url)
+            let item = AVPlayerItem(asset: asset)
+            let next = AVPlayer(playerItem: item)
+            player = next
+            next.play()
+            for _ in 0..<24 {
+                if Task.isCancelled {
+                    next.pause()
+                    return
+                }
+                switch item.status {
+                case .failed:
+                    next.pause()
+                    player = nil
+                    onFailed()
+                    return
+                case .readyToPlay:
+                    return
+                case .unknown:
+                    try? await Task.sleep(for: .milliseconds(125))
+                @unknown default:
+                    return
+                }
+            }
+        }
+        .onDisappear {
+            player?.pause()
+            player = nil
+        }
     }
 }
 
@@ -313,21 +483,29 @@ final class AudioPlayback {
     }
 }
 
+struct PhotoCanvasMenuItem {
+    let title: String
+    let action: () -> Void
+}
+
 struct PhotoCanvasView: NSViewRepresentable {
     let image: NSImage?
     var actualPixels: Bool
+    var menuItems: [PhotoCanvasMenuItem] = []
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> PhotoCanvas {
         let view = PhotoCanvas()
         view.image = image
+        view.menuItems = menuItems
         return view
     }
 
     func updateNSView(_ view: PhotoCanvas, context: Context) {
         let imageChanged = view.image !== image
         view.image = image
+        view.menuItems = menuItems
         if imageChanged || context.coordinator.actualPixels != actualPixels {
             context.coordinator.actualPixels = actualPixels
             if actualPixels {
@@ -352,8 +530,28 @@ final class PhotoCanvas: NSView {
     private var dragOrigin: CGPoint?
     private var offsetOrigin: CGSize = .zero
 
+    var menuItems: [PhotoCanvasMenuItem] = []
+
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
+
+    /// Right-click on the photo. SwiftUI's context menu does not reach an AppKit view.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard !menuItems.isEmpty else { return nil }
+        let menu = NSMenu()
+        for (index, entry) in menuItems.enumerated() {
+            let item = NSMenuItem(title: entry.title, action: #selector(runMenuItem(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = index
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    @objc private func runMenuItem(_ sender: NSMenuItem) {
+        guard menuItems.indices.contains(sender.tag) else { return }
+        menuItems[sender.tag].action()
+    }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 

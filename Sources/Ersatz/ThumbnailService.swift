@@ -81,57 +81,55 @@ actor RAWRenderer {
 
 actor ThumbnailWorker {
     private var inflight: [String: Task<Data?, Never>] = [:]
-    private var active = 0
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-    private let limit = 3
+    private let gate: WorkGate
 
+    init(gate: WorkGate) {
+        self.gate = gate
+    }
+
+    /// Thumbnails run in the gate's foreground lane: analysis waits for them, and the
+    /// newest request (the tile just scrolled into view) starts first. A tile that
+    /// scrolled away before its turn is skipped instead of rendered.
     func data(for item: MediaItem, token: String, maxPixel: Int, cache: ThumbnailCache) async -> Data? {
         let key = "\(item.id)-\(token)"
         if let existing = inflight[key] {
             return await existing.value
         }
-        let task = Task<Data?, Never> {
+        let gate = gate
+        let task = Task<Data?, Never>(priority: .userInitiated) {
             if let cached = cache.load(itemID: item.id, token: token), !cached.isEmpty {
                 return cached
             }
-            await self.enter()
-            let rendered = await Self.render(item: item, maxPixel: maxPixel)
-            self.leave()
-            if let rendered {
-                try? cache.store(rendered, itemID: item.id, token: token)
+            return await gate.run(.foreground) { () async -> Data? in
+                if Task.isCancelled { return nil }
+                let rendered = await Self.render(item: item, maxPixel: maxPixel)
+                if let rendered {
+                    try? cache.store(rendered, itemID: item.id, token: token)
+                }
+                return rendered
             }
-            return rendered
         }
         inflight[key] = task
-        let result = await task.value
+        let result = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
         inflight[key] = nil
         return result
     }
 
-    private func enter() async {
-        if active < limit {
-            active += 1
-            return
-        }
-        await withCheckedContinuation { continuation in
-            waiters.append(continuation)
-        }
-    }
-
-    private func leave() {
-        if waiters.isEmpty {
-            active -= 1
-        } else {
-            waiters.removeFirst().resume()
-        }
-    }
-
     private static func render(item: MediaItem, maxPixel: Int) async -> Data? {
         let url = URL(fileURLWithPath: item.path)
+        if item.kind == .video, ExternalPlayback.needsExternalPlayer(path: item.path) {
+            if let frame = await FFmpegRunner.thumbnailJPEG(source: url, maxSide: maxPixel, duration: item.duration) {
+                return frame
+            }
+        }
         if item.kind == .video || item.kind == .audio {
             return await QuickLookThumbnails.jpeg(url: url, maxPixel: maxPixel)
         }
-        let rendered = await Task.detached(priority: .utility) {
+        let rendered = await Task.detached(priority: .userInitiated) {
             ThumbnailRenderer.imageIO(url: url, maxPixel: maxPixel)
         }.value
         if let rendered { return rendered }
@@ -147,11 +145,12 @@ actor ThumbnailWorker {
 @MainActor
 final class ThumbnailService {
     private let cache: ThumbnailCache
-    private let worker = ThumbnailWorker()
+    private let worker: ThumbnailWorker
     private let memory = NSCache<NSString, NSImage>()
 
-    init(directory: URL) throws {
+    init(directory: URL, gate: WorkGate) throws {
         cache = try ThumbnailCache(directory: directory)
+        worker = ThumbnailWorker(gate: gate)
         memory.countLimit = 240
     }
 

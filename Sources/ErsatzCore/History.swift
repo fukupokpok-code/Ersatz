@@ -206,6 +206,8 @@ public struct AnalysisUpdate: Sendable {
     public var hasQR: Bool
     public var isBankSlip: Bool
     public var analyzedMTime: Int64
+    /// Which parts this update measured. Columns of other parts keep their cached values.
+    public var parts: AnalysisParts
 
     public init(
         mediaID: Int64,
@@ -216,8 +218,10 @@ public struct AnalysisUpdate: Sendable {
         isScreenshot: Bool,
         hasQR: Bool,
         isBankSlip: Bool,
-        analyzedMTime: Int64
+        analyzedMTime: Int64,
+        parts: AnalysisParts = .all
     ) {
+        self.parts = parts
         self.mediaID = mediaID
         self.partialHash = partialHash
         self.contentHash = contentHash

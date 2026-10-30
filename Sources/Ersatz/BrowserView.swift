@@ -14,8 +14,27 @@ struct BrowserView: View {
                 if model.isIndexing || model.progress != nil {
                     IndexBar()
                 }
+                if let status = model.analysisStatus {
+                    AnalysisBar(status: status)
+                }
                 if model.folders.isEmpty {
                     emptyLibrary
+                } else if case .blurry = model.filter {
+                    VStack(spacing: 0) {
+                        BlurThresholdBar()
+                        Divider()
+                        if model.items.isEmpty {
+                            ContentUnavailableView(
+                                "No blurry photos",
+                                systemImage: "camera.metering.unknown",
+                                description: Text("Nothing scored below the threshold yet. Raise it to catch softer photos.")
+                            )
+                        } else if model.viewMode == .grid {
+                            GridBrowser()
+                        } else {
+                            ListBrowser()
+                        }
+                    }
                 } else if model.items.isEmpty && model.folderCovers.isEmpty {
                     ContentUnavailableView {
                         Label("Nothing in this view", systemImage: "magnifyingglass")
@@ -26,19 +45,6 @@ struct BrowserView: View {
                     }
                 } else if case .duplicates = model.filter {
                     DuplicatesBrowser()
-                } else if case .blurry = model.filter {
-                    VStack(spacing: 0) {
-                        HStack {
-                            Text("Sharpness below \(Int(model.blurryThreshold))")
-                                .font(.caption)
-                            Slider(value: Bindable(model).blurryThreshold, in: 5...400)
-                                .frame(maxWidth: 220)
-                            Button("Apply") { Task { await model.reloadItems() } }
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        if model.viewMode == .grid { GridBrowser() } else { ListBrowser() }
-                    }
                 } else if model.viewMode == .grid {
                     GridBrowser()
                 } else {
@@ -96,6 +102,14 @@ struct BrowserView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .navigation) {
+            Button("Back", systemImage: "chevron.left") { model.navigate(.back) }
+                .disabled(!model.canGoBack)
+                .help("Back (⌘[ or mouse back button)")
+            Button("Forward", systemImage: "chevron.right") { model.navigate(.forward) }
+                .disabled(!model.canGoForward)
+                .help("Forward (⌘] or mouse forward button)")
+        }
         ToolbarItemGroup(placement: .primaryAction) {
             Button("Add Folder", systemImage: "folder.badge.plus") {
                 model.pickFolders()
@@ -134,6 +148,36 @@ struct BrowserView: View {
             }
             .help("Show metadata")
         }
+    }
+}
+
+private struct AnalysisBar: View {
+    @Environment(LibraryModel.self) private var model
+    let status: AnalysisStatus
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if let fraction = status.fraction {
+                ProgressView(value: fraction)
+                    .frame(width: 140)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            Text(status.total > 0
+                ? "\(status.title) \(status.done.formatted()) of \(status.total.formatted())"
+                : status.title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer()
+            Button("Stop") { model.cancelAnalysis() }
+                .controlSize(.small)
+                .help("Stop analyzing. Finished results are kept.")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .background(.bar)
     }
 }
 
@@ -202,8 +246,8 @@ private struct GridBrowser: View {
                     .padding(12)
                     .frame(width: geo.size.width, alignment: .leading)
                 }
-                .onChange(of: model.selectedID) { _, id in
-                    if let id { proxy.scrollTo(id, anchor: .center) }
+                .onChange(of: model.scrollTarget) { _, request in
+                    if let request { proxy.scrollTo(request.id, anchor: .center) }
                 }
             }
         }
@@ -267,8 +311,7 @@ private struct GridCell: View {
                 .frame(width: model.thumbnailSide, alignment: .leading)
         }
         .contentShape(Rectangle())
-        .onTapGesture { model.selectedID = item.id }
-        .simultaneousGesture(TapGesture(count: 2).onEnded { model.openViewer(item.id) })
+        .onTapGesture { model.tileClicked(item.id) }
         .contextMenu {
             Button("Open") { model.openViewer(item.id) }
             Button("Show in Finder") { model.reveal(item) }
@@ -276,6 +319,8 @@ private struct GridCell: View {
                 model.selectedID = item.id
                 model.showInfo = true
             }
+            Divider()
+            Button("Move to Trash…", role: .destructive) { model.confirmTrash([item]) }
         }
         .task(id: "\(item.id)-\(Int(model.thumbnailSide))-\(item.modifiedAt.timeIntervalSince1970)") {
             let side = model.thumbnailSide
@@ -386,42 +431,180 @@ private struct CoverImage: View {
     }
 }
 
+/// Sharpness runs 0 (smeared) to 100 (crisp). Moving the slider re-filters after a pause.
+private struct BlurThresholdBar: View {
+    @Environment(LibraryModel.self) private var model
+    @State private var pending: Task<Void, Never>?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text("Sharpness below \(Int(model.blurryThreshold))")
+                .font(.caption)
+                .monospacedDigit()
+            Slider(value: Bindable(model).blurryThreshold, in: 10...90, step: 1)
+                .frame(maxWidth: 240)
+            Button("Default") { model.blurryThreshold = Double(BlurDetector.defaultThreshold) }
+                .disabled(model.blurryThreshold == BlurDetector.defaultThreshold)
+            Spacer()
+            Text("\(model.items.count) photos")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .onChange(of: model.blurryThreshold) { _, value in
+            UserDefaults.standard.set(value, forKey: "blurThresholdV2")
+            pending?.cancel()
+            pending = Task {
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled else { return }
+                await model.reloadItems()
+            }
+        }
+    }
+}
+
+/// One section per duplicate set: the copy Ersatz would keep, then the others, each
+/// with the folder it lives in, so it is clear what goes where.
 private struct DuplicatesBrowser: View {
     @Environment(LibraryModel.self) private var model
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 18) {
-                if model.duplicateGroups.isEmpty {
-                    ContentUnavailableView("No duplicates", systemImage: "checkmark.circle", description: Text("Exact matches use a SHA-256 of the file. Near matches use a perceptual hash."))
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 40)
-                }
-                ForEach(Array(model.duplicateGroups.enumerated()), id: \.offset) { _, group in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("\(group.count) copies")
-                                .font(.headline)
-                            Spacer()
-                            Button("Keep First, Trash the Rest") {
-                                model.trashCandidates = Array(group.dropFirst())
-                                model.showTrashConfirm = true
-                            }
-                        }
-                        ScrollView(.horizontal) {
-                            HStack {
-                                ForEach(group) { item in
-                                    GridCell(item: item)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14, pinnedViews: [.sectionHeaders]) {
+                    if model.duplicateSets.isEmpty {
+                        ContentUnavailableView("No duplicates", systemImage: "checkmark.circle", description: Text("Exact matches use a SHA-256 of the file. Near matches use a perceptual hash."))
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 40)
+                    }
+                    ForEach(model.duplicateSets) { set in
+                        Section {
+                            VStack(spacing: 0) {
+                                ForEach(set.members) { item in
+                                    DuplicateRow(item: item, set: set, isOriginal: item.id == set.original.id)
+                                        .id(item.id)
+                                    if item.id != set.members.last?.id { Divider().padding(.leading, 96) }
                                 }
                             }
+                            .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.03)))
+                            .padding(.horizontal, 12)
+                        } header: {
+                            DuplicateSetHeader(set: set)
                         }
                     }
-                    .padding(.horizontal, 12)
+                }
+                .padding(.vertical, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .onChange(of: model.scrollTarget) { _, request in
+                if let request { proxy.scrollTo(request.id, anchor: .center) }
+            }
+        }
+    }
+}
+
+private struct DuplicateSetHeader: View {
+    @Environment(LibraryModel.self) private var model
+    let set: DuplicateSet
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("Set \(set.number)")
+                .font(.headline)
+            Text(set.kind == .exact ? "Exact copies" : "Look alike")
+                .font(.caption.weight(.medium))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Capsule().fill(set.kind == .exact ? Color.orange.opacity(0.2) : Color.blue.opacity(0.18)))
+            Text("\(set.members.count) files · \(ByteCountText.string(bytes: set.reclaimableBytes)) to reclaim")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("Keep Original, Trash \(set.copies.count == 1 ? "the Copy" : "\(set.copies.count) Copies")") {
+                model.confirmTrashCopies(of: set)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .background(.bar)
+    }
+}
+
+private struct DuplicateRow: View {
+    @Environment(LibraryModel.self) private var model
+    let item: MediaItem
+    let set: DuplicateSet
+    let isOriginal: Bool
+    @State private var image: NSImage?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.18))
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFit()
+                } else {
+                    Image(systemName: item.kind.symbolName).foregroundStyle(.secondary)
                 }
             }
-            .padding(.vertical, 12)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(width: 72, height: 72)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(isOriginal ? "Original" : "Copy")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(isOriginal ? Color.green.opacity(0.25) : Color.primary.opacity(0.1)))
+                    Text(item.filename)
+                        .font(.callout.weight(.medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Text(folderPath)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+                    .help(item.path)
+                Text(details)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            Spacer(minLength: 0)
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(model.selectedID == item.id ? Theme.safelight.opacity(0.16) : Color.clear)
+        .contentShape(Rectangle())
+        .onTapGesture { model.tileClicked(item.id) }
+        .contextMenu {
+            Button("Open") { model.openViewer(item.id) }
+            Button("Show in Finder") { model.reveal(item) }
+            Divider()
+            Button("Keep This One, Trash the Others…") { model.confirmKeepOnly(item, in: set) }
+            Button("Move to Trash…", role: .destructive) { model.confirmTrash([item]) }
+        }
+        .task(id: "\(item.id)-\(item.modifiedAt.timeIntervalSince1970)") {
+            let loaded = await model.thumbnail(for: item, side: 144)
+            if !Task.isCancelled { image = loaded }
+        }
+    }
+
+    private var folderPath: String {
+        let folder = (item.path as NSString).deletingLastPathComponent
+        return (folder as NSString).abbreviatingWithTildeInPath
+    }
+
+    private var details: String {
+        var parts = [ByteCountText.string(bytes: item.fileSize)]
+        if let resolution = item.resolutionLabel { parts.append(resolution) }
+        parts.append(DisplayDate.dateTime(item.dateTaken ?? item.createdAt ?? item.modifiedAt))
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -441,8 +624,8 @@ private struct ListBrowser: View {
                         }
                     }
                 }
-                .onChange(of: model.selectedID) { _, id in
-                    if let id { proxy.scrollTo(id, anchor: .center) }
+                .onChange(of: model.scrollTarget) { _, request in
+                    if let request { proxy.scrollTo(request.id, anchor: .center) }
                 }
             }
         }
@@ -518,11 +701,12 @@ private struct ListRow: View {
         .padding(.vertical, 6)
         .background(model.selectedID == item.id ? Theme.safelight.opacity(0.16) : Color.clear)
         .contentShape(Rectangle())
-        .onTapGesture { model.selectedID = item.id }
-        .simultaneousGesture(TapGesture(count: 2).onEnded { model.openViewer(item.id) })
+        .onTapGesture { model.tileClicked(item.id) }
         .contextMenu {
             Button("Open") { model.openViewer(item.id) }
             Button("Show in Finder") { model.reveal(item) }
+            Divider()
+            Button("Move to Trash…", role: .destructive) { model.confirmTrash([item]) }
         }
     }
 }
