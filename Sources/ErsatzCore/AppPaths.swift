@@ -1,37 +1,64 @@
 import Foundation
 
 public enum AppPaths {
-    public static func databaseURL(fileManager: FileManager = .default) throws -> URL {
-        let base = try fileManager.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let directory = base.appendingPathComponent("Ersatz", isDirectory: true)
+    /// Where the catalog, caches and log go. Nil (the normal case) means the usual
+    /// `~/Library` folders; a developer data directory (`DevLaunchOptions`) puts
+    /// everything under that one folder instead.
+    public static var dataRoot: URL? { DevLaunchOptions.current.dataDirectory }
+
+    public static func databaseURL(fileManager: FileManager = .default, root: URL? = dataRoot) throws -> URL {
+        let directory: URL
+        if let root {
+            directory = root
+        } else {
+            let base = try fileManager.url(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
+            directory = base.appendingPathComponent("Ersatz", isDirectory: true)
+        }
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory.appendingPathComponent("library.sqlite")
     }
 
-    public static func thumbnailCacheURL(fileManager: FileManager = .default) throws -> URL {
-        try cacheDirectory("Thumbnails", fileManager: fileManager)
+    public static func thumbnailCacheURL(fileManager: FileManager = .default, root: URL? = dataRoot) throws -> URL {
+        try cacheDirectory("Thumbnails", fileManager: fileManager, root: root)
     }
 
     /// Remuxed and transcoded playback files. Originals are never written here.
-    public static func playbackCacheURL(fileManager: FileManager = .default) throws -> URL {
-        try cacheDirectory("Playback", fileManager: fileManager)
+    public static func playbackCacheURL(fileManager: FileManager = .default, root: URL? = dataRoot) throws -> URL {
+        try cacheDirectory("Playback", fileManager: fileManager, root: root)
     }
 
-    private static func cacheDirectory(_ name: String, fileManager: FileManager) throws -> URL {
-        let base = try fileManager.url(
-            for: .cachesDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let directory = base
-            .appendingPathComponent("Ersatz", isDirectory: true)
-            .appendingPathComponent(name, isDirectory: true)
+    /// The activity log folder: `~/Library/Logs/Ersatz`, or `Logs` under a data directory.
+    /// Not created here; `ActivityLogFile` creates it.
+    public static func logsDirectory(root: URL? = dataRoot, home: String = NSHomeDirectory()) -> URL {
+        if let root {
+            return root.appendingPathComponent("Logs", isDirectory: true)
+        }
+        return URL(fileURLWithPath: home, isDirectory: true)
+            .appendingPathComponent("Library/Logs/Ersatz", isDirectory: true)
+    }
+
+    private static func cacheDirectory(_ name: String, fileManager: FileManager, root: URL?) throws -> URL {
+        let directory: URL
+        if let root {
+            directory = root
+                .appendingPathComponent("Caches", isDirectory: true)
+                .appendingPathComponent(name, isDirectory: true)
+        } else {
+            let base = try fileManager.url(
+                for: .cachesDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
+            directory = base
+                .appendingPathComponent("Ersatz", isDirectory: true)
+                .appendingPathComponent(name, isDirectory: true)
+        }
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }

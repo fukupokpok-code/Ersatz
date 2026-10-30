@@ -247,8 +247,7 @@ extension LibraryModel {
 
 enum ActivityLog {
     static let shared: ActivityLogFile? = {
-        let directory = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-            .appendingPathComponent("Library/Logs/Ersatz", isDirectory: true)
+        let directory = AppPaths.logsDirectory()
         do {
             return try ActivityLogFile(directory: directory)
         } catch {

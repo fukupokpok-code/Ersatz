@@ -1,132 +1,171 @@
 # Ersatz
 
-Ersatz is a native macOS library for photos, RAW, video, and audio. Point it at folders on disk. It indexes them into a local catalog, shows a fast thumbnail grid, and opens stills, video, and sound in one window.
+Ersatz is a native macOS library for photos, RAW, video, and audio. Point it at folders on disk. It indexes them into a local catalog, shows a fast thumbnail grid, and opens stills, video, and sound in one window. Files stay where they are, and the catalog stays on your Mac.
 
-The catalog lives on this Mac. Files stay where they are.
+*ภาษาไทยอยู่ด้านล่าง — [ข้ามไปส่วนภาษาไทย](#ersatz-ภาษาไทย)*
+
+![The Ersatz grid with the sidebar](docs/screenshots/grid.png)
+
+## Features
+
+- Indexes ordinary folders: no import, no copies, no moved files. Folders are watched with FSEvents and reindexed incrementally.
+- A fast thumbnail grid or a sortable list, with a resolution and format badge on every tile.
+- One viewer for photos, RAW, video, and audio, with pan, zoom, and actual-pixel view.
+- Plays MKV, WebM, AVI, FLV, and WMV through the ffmpeg you install yourself (optional).
+- Smart places: Duplicates, Blurry, Screenshots, QR Codes, Thai bank slips, and Buddhist-Era dates.
+- Duplicate cleanup that keeps the original and moves copies to the Trash, never deletes.
+- History with checkpoints: every change is logged and can be restored.
+- Finder-style Back and Forward with the keyboard, mouse buttons 4 and 5, or a swipe.
+- No network code, no accounts, no telemetry.
 
 ## Requirements
 
-- macOS 15 or later, Apple Silicon
-- Xcode 27 or another toolchain with Swift 6 and the macOS SDK
-- The app is a Swift package. It opens in Xcode or in VS Code with the Swift extension.
-- ffmpeg is optional. Ersatz does not bundle or link it. Install it with `brew install ffmpeg` to play MKV, WebM, AVI, FLV, and WMV, and to read their codec, duration, and thumbnails.
+- macOS 15 or later on Apple Silicon.
+- To build: Xcode 16 or later, or another Swift 6 toolchain with the macOS SDK. Developed and tested with Xcode 27 on macOS 27.
+- Optional: ffmpeg (`brew install ffmpeg`) for MKV, WebM, AVI, FLV, and WMV. Ersatz does not bundle or link it.
 
-`ErsatzCore` (indexing, SQLite, metadata, sorting) also builds on Linux so the unit tests can run without a Mac. The windowed app is macOS-only.
+## Install and build
 
-## Build and run on a Mac
-
-Use Xcode’s toolchain so SwiftUI and the macOS SDK are available:
+Ersatz is a Swift package with no third-party dependencies. It opens in Xcode, or in VS Code with the Swift extension.
 
 ```bash
-sudo xcode-select -s /Applications/Xcode.app
 cd /path/to/Ersatz
 swift test
 ./scripts/bundle.sh
 open build/Ersatz.app
 ```
 
-`scripts/bundle.sh` runs `swift build -c release` and wraps the binary in `build/Ersatz.app` (bundle id `com.mongkol.ersatz`), then ad-hoc signs it so Apple Silicon will launch it.
+If `swift` does not find the macOS SDK, point the command-line tools at Xcode once with `xcode-select -s /Applications/Xcode.app` (this needs an administrator).
 
-While developing, `swift run Ersatz` also starts the executable. The `.app` bundle is the one that behaves like a normal Mac application.
+`scripts/bundle.sh` runs `swift build -c release`, wraps the binary in `build/Ersatz.app` (bundle id `com.mongkol.ersatz`), and ad-hoc signs it so Apple Silicon will launch it. There is no Developer ID signature. `swift run Ersatz` also starts the app while developing.
 
-Add a folder from the toolbar or with File → Add Folder… (Command-O). Ersatz remembers the folder with a security-scoped bookmark and indexes it in the background.
+## Using Ersatz
 
-## Tests on Linux or macOS
+Add a folder with the toolbar button or File → Add Folder… (Command-O). Ersatz remembers it with a security-scoped bookmark and indexes it in the background. Removing a folder (Command-Delete) only takes it out of the catalog; the files are not touched.
 
-`ErsatzCore` uses the system SQLite library.
+### Sidebar
 
-```bash
-# Ubuntu / Debian
-sudo apt install libsqlite3-dev
-swift test
-```
+- **Library**: All Media, then each folder you added with the directories inside it. Picking a folder scopes the other sections to it, and their titles read "Name · library". All Media clears the scope. In the grid, subfolders show as a cover: one photo, or the first three fanned like a small stack.
+- **Date Taken**: year, then month, plus **Unknown** for files without a capture date. Dates are stored in the Gregorian calendar.
+- **Type**: Photos, RAW, Video, Audio.
+- **Smart**: Duplicates, Blurry, Screenshots, QR Codes, Bank Slips, Buddhist-Era Dates.
 
-On a Mac, SQLite ships with the SDK; `swift test` is enough.
+Sort by name, date taken, date modified, file size, resolution (pixel count), codec, or file type. Missing values sort last. The info panel (Command-I) is the column to the right of the grid.
+
+### Viewer
+
+Space or Return opens the selected item; Space or Esc closes it. The arrow keys move to the previous or next item. Drag pans a photo, the scroll wheel or a trackpad pinch zooms, and a double-click toggles between fit and actual pixels. Stills and RAW are decoded up to a pixel cap (about 3200 px on the long edge when fitted, 8192 px at actual size). Audio has play, pause, and a scrubber.
+
+### Video formats and ffmpeg
+
+Video that AVFoundation can play uses the system player. MKV, WebM, AVI, FLV, and WMV go through ffmpeg on your Mac: Ersatz looks in `/opt/homebrew/bin`, then `/usr/local/bin`, then `PATH`, or uses the path set in Settings. It converts the file into a cached MP4 for playback, with progress and Cancel, and never modifies the original. Indexing reads resolution, codec, and duration with ffprobe, and the thumbnail is one ffmpeg frame. Without ffmpeg those files stay listed as Video and the viewer shows how to install it; reindex afterwards to fill in the details.
+
+### Smart places and analysis
+
+Analysis runs only on demand: when you open a Smart place, or choose Library → Analyze Library. Each place computes only what it needs, and unchanged files are skipped next time. Leaving a Smart place stops its pass; an Analyze Library pass keeps running until it is done or you choose Library → Stop Analyzing (Command-.). While folders are still being indexed, analysis waits.
+
+- **Blurry** scores each photo from 0 (blurry) to 100 (sharp) by how wide its edges are, tile by tile, so a sharp subject on a soft background still counts as sharp. The threshold slider runs from 10 to 90 (default 45), with a Default button.
+- **Screenshots** uses the file name and common Mac and iPhone screen sizes for PNGs without a camera model.
+- **QR Codes** and **Bank Slips** (Thai transfer slips) use Apple's Vision framework on the Mac.
+- **Buddhist-Era Dates** needs no analysis: an EXIF year above 2400 is read as Buddhist Era and stored as year − 543.
+
+### Duplicates and Trash
+
+Duplicates shows numbered sets. **Exact copies** have the same size and SHA-256 hash; **Look alike** photos have nearly the same perceptual hash, for example a resized copy. Videos match only as exact copies. Each set shows how much space removing the copies would free.
+
+Ersatz suggests which file to keep. For exact copies that is the oldest file, then the shorter path. For look-alikes it is the one with the most pixels, then the larger file, then the oldest. **Keep Original, Trash the Copy** (or **Trash N Copies**) applies that choice; a row's context menu has **Keep This One, Trash the Others…**. **Move to Trash…** is also in the Library menu and in the grid, list, and viewer context menus.
+
+Ersatz always asks first, moves files to the macOS Trash (it never deletes them), and records each move so History can put the file back.
+
+### History
+
+View → History (Command-Shift-H) lists every change with a checkpoint. You can restore a whole checkpoint or a single file, search the list, and reveal the activity log in Finder. Old checkpoints are pruned at launch or with Prune Now: keep 1 to 365 days (default 30). The size limit (0.5 to 50 GB, default 2 GB) counts stored file backups; today's changes only store metadata and Trash locations, so in practice the day limit decides.
+
+View → Fix Buddhist-Era Dates… lists files whose year was corrected. Nothing is written until you confirm. ImageIO updates the date in the file when it can; otherwise Ersatz writes an `.xmp` sidecar. The original date is kept in the checkpoint.
+
+## Keyboard and mouse
+
+| Key or gesture | Action |
+| --- | --- |
+| Space | Open or close the viewer |
+| Return or Enter | Open the viewer |
+| Esc | Close the viewer |
+| Left / Right | Previous / next item |
+| Up / Down | Move by a row in the grid, or through the list |
+| Command-[ / Command-] | Back / Forward |
+| Mouse buttons 4 / 5, swipe left / right, toolbar arrows | Back / Forward |
+| Command-O | Add Folder… |
+| Command-Delete | Remove the selected folder from the library |
+| Command-I | Show or hide the info panel |
+| Command-1 / Command-2 | Grid / list |
+| Command-+ / Command-- | Bigger / smaller thumbnails |
+| Command-R | Reindex |
+| Command-. | Stop Analyzing |
+| Command-Shift-H | History |
+| Command-, | Settings |
+
+Analyze Library, Move to Trash…, and Fix Buddhist-Era Dates… have no shortcut. Back and Forward work like Finder: they move between the places you visited, and opening the viewer counts as a step, so Back closes it and Forward opens it again. Moving between items with the arrow keys does not add steps.
+
+## Settings
+
+Settings (Command-,) has two options:
+
+- **ffmpeg**: a custom path. Leave it blank to search `/opt/homebrew/bin`, then `/usr/local/bin`, then `PATH`.
+- **Playback cache**: 1 to 100 GB (default 5 GB). When the converted videos pass this size, the oldest are removed first.
+
+## Privacy
+
+Ersatz has no network code: no update checks, no analytics, no accounts. It reads the folders you add and writes only its own catalog, caches, and log (below). The only outside programs it runs are the ffmpeg and ffprobe you installed. Vision analysis runs on your Mac.
 
 ## Where data is stored
 
 | What | Path |
 | --- | --- |
-| Catalog | `~/Library/Application Support/Ersatz/library.sqlite` |
+| Catalog and checkpoints | `~/Library/Application Support/Ersatz/library.sqlite` |
 | Thumbnails | `~/Library/Caches/Ersatz/Thumbnails` |
 | Playback cache | `~/Library/Caches/Ersatz/Playback` |
-| Checkpoints | `~/Library/Application Support/Ersatz/Checkpoints` |
 | Activity log | `~/Library/Logs/Ersatz/activity.log` |
-
-Removing a folder from the library does not delete the files.
-
-## Using the window
-
-The sidebar has four sections:
-
-- **Library** — folders you added, with the directories inside them. The grid also shows each subfolder as a cover: one photo, or the first three fanned like a small stack. Folders with no photos keep a plain folder icon.
-- **Date Taken** — year, then month. Capture dates are stored in the Gregorian calendar. An EXIF year above 2400 is treated as Buddhist Era and stored as year − 543, with a flag so you can write the corrected date back.
-- **Type** — Photos, RAW, Video, Audio
-- **Smart** — duplicates (SHA-256, plus a perceptual hash for near matches), blurry photos (Laplacian variance, adjustable threshold), screenshots, QR codes, Thai bank-transfer slips, and files whose dates were corrected from the Buddhist Era.
-
-Sort by name, date taken, date modified, file size, resolution (pixel count), codec, or file type (kind, then format). Missing values sort last. Every thumbnail shows a resolution and format badge. The info panel is the only column to the right of the grid.
-
-Indexing writes a basic catalog row first, so files show up before dimensions and EXIF are read. Metadata is extracted afterward with a small pool of tasks, one per processor. Analysis (hashes, sharpness, Vision on a Mac) runs as a later pass and is skipped when the file has not changed.
-
-| Key | Action |
-| --- | --- |
-| Space | Toggle the full-size viewer |
-| Esc | Leave the viewer |
-| Left / Right | Previous / next item |
-| Up / Down | Move through the grid or list |
-| Return | Open the viewer |
-| Command-O | Add a folder |
-| Command-Delete | Remove the selected library folder |
-| Command-I | Show or hide the info panel |
-| Command-1 / Command-2 | Grid / list |
-| Command-R | Reindex |
-| Command-+ / Command-- | Larger or smaller thumbnails |
-| Command-Shift-H | History |
-
-In the viewer, drag pans a photo and the scroll wheel or trackpad pinch zooms it. Double-click toggles between fit and actual pixels. Video that AVFoundation can play uses the system player. MKV, WebM, AVI, FLV, and WMV go through ffmpeg on this Mac: Ersatz searches `/opt/homebrew/bin`, `/usr/local/bin`, and `PATH`, or a custom path in Settings. If ffmpeg is missing, the viewer explains `brew install ffmpeg` instead of failing quietly. H.264 or HEVC with AAC, Apple Lossless, MP3, AC-3, E-AC-3, or no audio is remuxed losslessly (`-c copy`, HEVC tagged `hvc1`, `-movflags +faststart`) into a cached MP4. Anything else is transcoded with VideoToolbox (`h264_videotoolbox` or `hevc_videotoolbox`) and AAC, with progress and cancel. The cache is keyed by path, size, and modification time and defaults to 5 GB. The original file is never modified. Audio has play, pause, and a scrubber. Arrow keys move between items instead of seeking.
-
-Folders are watched with FSEvents. A change triggers an incremental reindex: files whose size and modification time are unchanged are skipped. New and edited files are read again, and files that disappeared are dropped from the catalog.
-
-History → Fix Buddhist-Era Dates… lists files whose EXIF year was corrected. Nothing is written until you confirm. The original date is stored in a checkpoint (metadata only, not a second copy of the photo). ImageIO updates the file in place when it can; otherwise Ersatz writes an `.xmp` sidecar. Duplicate removal moves the files you do not keep to the Trash with `NSWorkspace.recycle` and records the Trash URL. Content edits, if added later, clone the original into the checkpoint folder with `FileManager.copyItem` (an APFS clone on Apple Silicon). Checkpoints older than 30 days are pruned, and the History window can cap how much backup storage they use. Every change is also appended to the activity log.
-
-## Project layout
-
-```
-Package.swift
-Sources/CSQLite/                  system SQLite module map
-Sources/ErsatzCore/               catalog, parsers, indexer, sorting
-Sources/Ersatz/                   SwiftUI app (macOS)
-Tests/ErsatzCoreTests/            unit tests and generated sample files
-Resources/Info.plist
-scripts/bundle.sh
-```
-
-SQLite is linked from the system library (`libsqlite3`) instead of a third-party wrapper so `ErsatzCore` builds on Linux and macOS with the same code.
-
-Metadata that can be read from file headers (JPEG EXIF, PNG, GIF, BMP, TIFF-based RAW, WAV, AIFF, FLAC, MP3, and MP4/QuickTime boxes) is parsed in `ErsatzCore`. On a Mac, ImageIO, AVFoundation, and Core Image fill gaps: ImageIO for stills and RAW metadata, Core Image (`CIRAWFilter`) when developing a RAW file for the viewer, AVFoundation for duration and codec, and QuickLook for video and audio thumbnails. For MKV, WebM, AVI, FLV, and WMV, indexing calls the user’s ffprobe (never a bundled binary) for resolution, codec, and duration, and thumbnails are one frame extracted with ffmpeg. If ffprobe is not installed, those files stay in the catalog as Video. Reindex after installing ffmpeg so the details fill in.
-
-## What was verified here
-
-On Linux, with Swift 6.3, `swift test` passes **44 tests**. That includes Buddhist-era date correction, file-type sorting, SHA-256, perceptual hashes, sharpness, screenshot and bank-slip heuristics, duplicate grouping, folder covers, checkpoints, the activity log, ffmpeg/ffprobe location, ffprobe JSON plans, remux and transcode arguments, progress parsing, and the playback-cache LRU. Those ffmpeg tests do not launch ffmpeg. Also included is a 40-file index benchmark. On these tiny JPEGs the measured times were sequential header reads **0.002s**, catalog insert **0.005s**, and the full two-pass index **0.007s**. The fixtures are too small for the worker pool to beat a straight parse; the catalog pass is what puts rows on screen before metadata, and the pool is sized to the processor count for ImageIO and AVFoundation work on a Mac.
-
-`swift build` on Linux compiles the package. The `Ersatz` executable there only prints that the app requires macOS.
-
-The SwiftUI target was not compiled or launched here. There is no macOS SDK in this environment. Build it on a Mac with the commands above. If the compiler reports errors, they can be fixed from that log.
 
 ## Known gaps
 
-- The app is not sandboxed. Security-scoped bookmarks are still created and restored so a later sandbox would keep folder access.
+- The app is not sandboxed. Security-scoped bookmarks are still created and restored so a later sandbox keeps folder access.
 - Symbolic links are not followed. Hidden files, AppleDouble `._` files, and bundle packages are skipped.
 - If two library folders overlap, the index that ran last owns each path.
-- The viewer decodes stills and RAW up to a pixel cap (about 3200 on the long edge when fitted, 8192 for actual size) so very large files are not fully expanded in memory.
-- HEIC, CR3, and other formats the portable parser does not fully understand rely on ImageIO or AVFoundation on macOS. MKV, WebM, AVI, FLV, and WMV need a separate ffmpeg install. Without it they stay listed as Video, and the viewer shows how to install ffmpeg.
-- A filesystem event rescans that folder incrementally. It does not patch a single file in isolation.
+- A filesystem event rescans that folder incrementally; it does not patch a single file.
 - Orphan thumbnail files are not purged when an item leaves the catalog.
-- Capture dates are stored as Gregorian dates. The info panel still formats them with the Mac’s locale, so a Thai Buddhist calendar can display the corrected year in BE.
-- QR codes and Thai slip text use Vision and are only collected on macOS. The keyword rules themselves are in ErsatzCore.
-- No albums, ratings, or a general photo editor.
-- The bundle is ad-hoc signed. There is no Developer ID signature.
-- One window. Space toggles the viewer; use the on-screen controls to pause playback.
+- HEIC, CR3, and other formats the portable parser does not fully read rely on ImageIO or AVFoundation.
+- Capture dates are stored as Gregorian dates and shown in your Mac's calendar, so a Thai Buddhist calendar shows the corrected year in BE.
+- No albums, ratings, or photo editing.
+- The bundle is ad-hoc signed; there is no Developer ID signature or notarization.
+- One window.
+
+## Development
+
+```
+Package.swift
+Sources/CSQLite/          system SQLite module map
+Sources/ErsatzCore/       catalog, parsers, indexer, analysis, sorting
+Sources/Ersatz/           SwiftUI app (macOS)
+Tests/ErsatzCoreTests/    unit tests and generated sample files
+Resources/                Info.plist and the app icon
+scripts/bundle.sh
+```
+
+`ErsatzCore` also builds on Linux (`sudo apt install libsqlite3-dev`, then `swift test`), so most tests run without a Mac; the window app is macOS-only. SQLite is the system library, not a third-party wrapper.
+
+Indexing writes a basic catalog row first so files appear at once, then reads metadata in a worker pool (at least two workers, one per processor). Thumbnails (up to half the cores, at least four at a time) and analysis (up to half, at least one) share a work gate, and thumbnails always go first. File headers (JPEG EXIF, PNG, GIF, BMP, TIFF-based RAW, WAV, AIFF, FLAC, MP3, MP4/QuickTime) are parsed in `ErsatzCore`; on a Mac, ImageIO, AVFoundation, Core Image, and QuickLook fill the gaps.
+
+For ffmpeg playback, H.264 or HEVC with AAC, Apple Lossless, MP3, AC-3, E-AC-3, or no audio is remuxed losslessly (`-c copy`, HEVC tagged `hvc1`, `-movflags +faststart`). Anything else is transcoded with VideoToolbox (`h264_videotoolbox` or `hevc_videotoolbox`) and AAC. The cache is keyed by path, size, and modification time.
+
+**Testing.** `swift test` runs 120 tests on macOS (round 11). They cover the catalog and migrations, Buddhist-Era dates, sorting, hashing and duplicate grouping, blur scoring, screenshot and slip rules, the analysis planner, Back/Forward history, checkpoints and pruning, ffmpeg arguments and progress parsing, and the playback-cache limit. The ffmpeg tests do not launch ffmpeg.
+
+**Demo catalog.** For screenshots or experiments, launch with `ERSATZ_DATA_DIR=/tmp/ErsatzDemoData` or `-ErsatzDataDir /tmp/ErsatzDemoData`. The catalog, caches, and log then live there instead of `~/Library`. Only with a data directory set, `-ErsatzAddFolder <path>`, `-ErsatzStartFilter <place>`, `-ErsatzOpenViewer`, `-ErsatzWindowSize 1600x1000`, and `-ErsatzSnapshot <file.png>` (with `-ErsatzSnapshotDelay <seconds>`) are honoured. The README screenshots were made this way from generated images, not real photos.
+
+## Inspiration and credits
+
+Ersatz is inspired by [Diffractor](https://diffractor.com), a fast, free photo and video organizer for Windows by Zac Walker ([source on GitHub](https://github.com/ZacWalk/diffractor)). Diffractor's source is licensed under the LGPL 2.1 or later, and its released binaries under the LGPL 3.0 or later. It shaped the idea: a local library over ordinary folders, a fast thumbnail grid, one viewer for photos, video, and audio, and tools such as duplicate detection.
+
+Ersatz is a separate app written from scratch in Swift and SwiftUI for macOS. It is not a port of Diffractor, and it contains no Diffractor code, icons, or other assets; the interface uses Apple's SF Symbols. The name only means "a stand-in". Ersatz is not affiliated with, sponsored by, or endorsed by Zac Walker or the Diffractor project. On Windows, Diffractor itself is the natural choice.
 
 ## License
 
@@ -136,133 +175,158 @@ MIT. See [LICENSE](LICENSE).
 
 # Ersatz (ภาษาไทย)
 
-Ersatz คือโปรแกรมบน macOS สำหรับจัดระเบียบรูปภาพ ไฟล์ RAW วิดีโอ และเสียง เลือกโฟลเดอร์บนดิสก์ แล้วโปรแกรมจะทำดัชนีไว้ในเครื่อง แสดงตารางภาพย่อ และเปิดภาพ วิดีโอ หรือเสียงในหน้าต่างเดียวกัน
+Ersatz คือโปรแกรมบน macOS สำหรับจัดระเบียบรูปภาพ ไฟล์ RAW วิดีโอ และเสียง เลือกโฟลเดอร์บนดิสก์ แล้วโปรแกรมจะทำดัชนีเก็บไว้ในเครื่อง แสดงตารางภาพย่อที่เร็ว และเปิดภาพ วิดีโอ หรือเสียงในหน้าต่างเดียว ไฟล์อยู่ที่เดิม แคตตาล็อกอยู่บน Mac ของคุณ
 
-ไฟล์ต้นฉบับไม่ถูกย้าย แคตตาล็อกอยู่บน Mac เครื่องนี้
+## ความสามารถ
+
+- ทำดัชนีจากโฟลเดอร์ปกติ ไม่ต้องนำเข้า ไม่ก็อปปี้ ไม่ย้ายไฟล์ เฝ้าโฟลเดอร์ด้วย FSEvents และทำดัชนีใหม่เฉพาะส่วนที่เปลี่ยน
+- ตารางภาพย่อหรือรายการที่เรียงได้ ทุกช่องมีป้ายความละเอียดและฟอร์แมต
+- ตัวดูเดียวสำหรับภาพ RAW วิดีโอ และเสียง เลื่อน ซูม และดูขนาดจริงได้
+- เล่น MKV, WebM, AVI, FLV, WMV ผ่าน ffmpeg ที่คุณติดตั้งเอง (ไม่บังคับ)
+- หมวดอัจฉริยะ: ไฟล์ซ้ำ รูปเบลอ ภาพหน้าจอ คิวอาร์โค้ด สลิปโอนเงินไทย และวันที่แบบ พ.ศ.
+- ล้างไฟล์ซ้ำโดยเก็บต้นฉบับไว้ และย้ายสำเนาไปถังขยะ ไม่ลบทิ้ง
+- ประวัติพร้อม checkpoint ทุกการเปลี่ยนถูกบันทึกและกู้คืนได้
+- ย้อนกลับ/ไปข้างหน้าแบบ Finder ด้วยคีย์บอร์ด ปุ่มเมาส์ 4 และ 5 หรือการปัด
+- ไม่มีโค้ดเครือข่าย ไม่มีบัญชี ไม่มีการเก็บสถิติ
 
 ## สิ่งที่ต้องมี
 
 - macOS 15 ขึ้นไป บน Apple Silicon
-- Xcode 27 หรือ toolchain อื่นที่มี Swift 6 และ macOS SDK
-- โปรเจกต์เป็น Swift package เปิดได้ทั้งใน Xcode และ VS Code (ส่วนขยาย Swift)
-- ffmpeg เป็นทางเลือก ไม่ได้รวมมากับแอปและไม่ได้ลิงก์เข้าไปในไบนารี ติดตั้งด้วย `brew install ffmpeg` เพื่อเล่นไฟล์ MKV, WebM, AVI, FLV, WMV และเพื่ออ่าน codec ความยาว และภาพย่อ
+- สำหรับ build: Xcode 16 ขึ้นไป หรือ toolchain Swift 6 ที่มี macOS SDK (พัฒนาและทดสอบกับ Xcode 27 บน macOS 27)
+- ไม่บังคับ: ffmpeg (`brew install ffmpeg`) สำหรับ MKV, WebM, AVI, FLV, WMV โดย Ersatz ไม่ได้รวมหรือลิงก์ ffmpeg มาด้วย
 
-ไลบรารี `ErsatzCore` (ดัชนี, SQLite, metadata, การเรียงลำดับ) แปลบน Linux ได้ เพื่อรันเทสโดยไม่ต้องมี Mac ส่วนหน้าต่างแอปเป็นของ macOS เท่านั้น
+## ติดตั้งและ build
 
-## วิธี build และเปิดบน Mac
-
-ให้ `swift` ชี้ไปที่ Xcode เพื่อให้มี SwiftUI และ macOS SDK:
+Ersatz เป็น Swift package ที่ไม่พึ่งไลบรารีภายนอก เปิดได้ใน Xcode หรือ VS Code (ส่วนขยาย Swift)
 
 ```bash
-sudo xcode-select -s /Applications/Xcode.app
 cd /path/to/Ersatz
 swift test
 ./scripts/bundle.sh
 open build/Ersatz.app
 ```
 
-`scripts/bundle.sh` รัน `swift build -c release` แล้วห่อไบนารีเป็น `build/Ersatz.app` (bundle id `com.mongkol.ersatz`) จากนั้นเซ็นแบบ ad-hoc เพื่อให้ Apple Silicon เปิดแอปได้
+ถ้า `swift` หา macOS SDK ไม่เจอ ให้ชี้ command-line tools ไปที่ Xcode ครั้งเดียวด้วย `xcode-select -s /Applications/Xcode.app` (ต้องใช้สิทธิ์ผู้ดูแลระบบ)
 
-ระหว่างพัฒนา สั่ง `swift run Ersatz` ได้เช่นกัน แต่ไฟล์ `.app` คือวิธีเปิดแบบแอป Mac ปกติ
+`scripts/bundle.sh` รัน `swift build -c release` ห่อไบนารีเป็น `build/Ersatz.app` (bundle id `com.mongkol.ersatz`) แล้วเซ็นแบบ ad-hoc เพื่อให้ Apple Silicon เปิดได้ ไม่มีลายเซ็น Developer ID ระหว่างพัฒนาใช้ `swift run Ersatz` ได้
 
-เพิ่มโฟลเดอร์จากแถบเครื่องมือ หรือเมนู File → Add Folder… (Command-O) โปรแกรมจำโฟลเดอร์ด้วย security-scoped bookmark แล้วทำดัชนีในพื้นหลัง
+## วิธีใช้ Ersatz
 
-## เทสบน Linux หรือ macOS
+เพิ่มโฟลเดอร์ด้วยปุ่มบนแถบเครื่องมือหรือ File → Add Folder… (Command-O) โปรแกรมจำโฟลเดอร์ด้วย security-scoped bookmark แล้วทำดัชนีในพื้นหลัง การเอาโฟลเดอร์ออก (Command-Delete) แค่เอาออกจากแคตตาล็อก ไม่แตะไฟล์
 
-`ErsatzCore` ใช้ SQLite ของระบบ
+### แถบด้านข้าง
 
-```bash
-# Ubuntu / Debian
-sudo apt install libsqlite3-dev
-swift test
-```
+- **Library**: All Media แล้วตามด้วยโฟลเดอร์ที่เพิ่มและไดเรกทอรีข้างใน เลือกโฟลเดอร์แล้วหมวดอื่นจะแสดงเฉพาะโฟลเดอร์นั้น หัวข้อจะเป็น "ชื่อ · library" เลือก All Media เพื่อกลับมาดูทั้งหมด ในตาราง โฟลเดอร์ย่อยแสดงเป็นปก: รูปเดียว หรือสามรูปแรกซ้อนเอียง
+- **Date Taken**: ปี แล้วเดือน และ **Unknown** สำหรับไฟล์ที่ไม่มีวันที่ถ่าย วันที่เก็บเป็นปฏิทินเกรกอเรียน
+- **Type**: Photos, RAW, Video, Audio
+- **Smart**: Duplicates, Blurry, Screenshots, QR Codes, Bank Slips, Buddhist-Era Dates
 
-บน Mac มี SQLite มากับ SDK อยู่แล้ว ใช้ `swift test` ได้เลย
+เรียงตามชื่อ วันที่ถ่าย วันที่แก้ไข ขนาดไฟล์ ความละเอียด codec หรือชนิดไฟล์ได้ ค่าที่ไม่มีอยู่ท้ายสุด แผงข้อมูล (Command-I) คือคอลัมน์ทางขวาของตาราง
+
+### ตัวดู
+
+Space หรือ Return เปิดรายการที่เลือก Space หรือ Esc ปิด ปุ่มลูกศรไปรายการก่อนหน้าหรือถัดไป ลากเพื่อเลื่อนภาพ ใช้ล้อเมาส์หรือบีบนิ้วบนแทร็กแพดเพื่อซูม ดับเบิลคลิกสลับระหว่างพอดีหน้าต่างกับขนาดจริง ภาพนิ่งและ RAW ถอดรหัสไม่เกินเพดานพิกเซล (ด้านยาวราว 3200 px เมื่อพอดีหน้าต่าง 8192 px เมื่อขนาดจริง) ไฟล์เสียงมีปุ่มเล่น หยุดชั่วคราว และแถบเลื่อนเวลา
+
+### ฟอร์แมตวิดีโอและ ffmpeg
+
+วิดีโอที่ AVFoundation เล่นได้ใช้ตัวเล่นของระบบ ส่วน MKV, WebM, AVI, FLV และ WMV ใช้ ffmpeg บน Mac ของคุณ โปรแกรมค้นที่ `/opt/homebrew/bin` แล้ว `/usr/local/bin` แล้ว `PATH` หรือใช้พาธที่ตั้งใน Settings ไฟล์จะถูกแปลงเป็น MP4 ในแคชเพื่อเล่น มีแถบความคืบหน้าและปุ่ม Cancel และไม่แก้ไฟล์ต้นฉบับ ตอนทำดัชนีจะอ่านความละเอียด codec และความยาวด้วย ffprobe และภาพย่อคือหนึ่งเฟรมจาก ffmpeg ถ้าไม่มี ffmpeg ไฟล์เหล่านี้ยังแสดงเป็น Video และตัวดูจะบอกวิธีติดตั้ง ติดตั้งแล้วให้ทำดัชนีใหม่
+
+### หมวดอัจฉริยะและการวิเคราะห์
+
+การวิเคราะห์ทำเมื่อสั่งเท่านั้น คือเมื่อเปิดหมวด Smart หรือเลือก Library → Analyze Library แต่ละหมวดคำนวณเฉพาะสิ่งที่ต้องใช้ และข้ามไฟล์ที่ไม่เปลี่ยน ออกจากหมวด Smart แล้วรอบของหมวดนั้นจะหยุด ส่วน Analyze Library ทำต่อจนเสร็จ หรือจนกว่าจะเลือก Library → Stop Analyzing (Command-.) ระหว่างที่ยังทำดัชนีโฟลเดอร์อยู่ การวิเคราะห์จะรอ
+
+- **Blurry** ให้คะแนนรูปจาก 0 (เบลอ) ถึง 100 (คม) ตามความกว้างของขอบภาพ ดูทีละส่วนของภาพ ดังนั้นรูปที่ตัวแบบคมแต่ฉากหลังนุ่มยังนับว่าคม แถบเกณฑ์ปรับได้ 10 ถึง 90 (ค่าเริ่มต้น 45) และมีปุ่ม Default
+- **Screenshots** ดูจากชื่อไฟล์ และขนาดจอ Mac กับ iPhone ที่พบบ่อยสำหรับไฟล์ PNG ที่ไม่มีรุ่นกล้อง
+- **QR Codes** และ **Bank Slips** (สลิปโอนเงินไทย) ใช้ Vision ของ Apple บน Mac
+- **Buddhist-Era Dates** ไม่ต้องวิเคราะห์: ปีใน EXIF ที่มากกว่า 2400 ถือเป็น พ.ศ. และเก็บเป็นปี − 543
+
+### ไฟล์ซ้ำและถังขยะ
+
+Duplicates แสดงเป็นชุดที่มีหมายเลข **Exact copies** คือไฟล์ที่ขนาดและแฮช SHA-256 ตรงกัน **Look alike** คือรูปที่ perceptual hash เกือบเท่ากัน เช่น รูปที่ถูกย่อขนาด วิดีโอจับคู่ได้เฉพาะแบบตรงกันทุกไบต์ แต่ละชุดบอกว่าจะได้พื้นที่คืนเท่าไร
+
+Ersatz เสนอว่าจะเก็บไฟล์ไหน สำหรับไฟล์ที่ตรงกันทุกไบต์คือไฟล์ที่เก่าที่สุด แล้วพาธที่สั้นกว่า สำหรับรูปที่คล้ายกันคือรูปที่มีพิกเซลมากที่สุด แล้วไฟล์ที่ใหญ่กว่า แล้วไฟล์ที่เก่าที่สุด ปุ่ม **Keep Original, Trash the Copy** (หรือ **Trash N Copies**) ใช้ตัวเลือกนี้ เมนูคลิกขวาของแต่ละแถวมี **Keep This One, Trash the Others…** และ **Move to Trash…** ยังมีในเมนู Library และเมนูคลิกขวาของตาราง รายการ และตัวดู
+
+Ersatz ถามก่อนทุกครั้ง ย้ายไฟล์ไปถังขยะของ macOS (ไม่ลบทิ้ง) และบันทึกทุกการย้าย เพื่อให้ History กู้ไฟล์คืนได้
+
+### ประวัติ
+
+View → History (Command-Shift-H) แสดงทุกการเปลี่ยนพร้อม checkpoint กู้คืนได้ทั้ง checkpoint หรือทีละไฟล์ ค้นหาได้ และเปิดดู activity log ใน Finder ได้ checkpoint เก่าถูกลบตอนเปิดแอปหรือเมื่อกด Prune Now: เก็บไว้ 1 ถึง 365 วัน (ค่าเริ่มต้น 30) เพดานขนาด (0.5 ถึง 50 GB ค่าเริ่มต้น 2 GB) นับเฉพาะไฟล์สำรองที่เก็บไว้ ปัจจุบันการเปลี่ยนเก็บแค่ metadata และตำแหน่งในถังขยะ ในทางปฏิบัติจึงใช้เกณฑ์จำนวนวัน
+
+View → Fix Buddhist-Era Dates… แสดงไฟล์ที่ปีถูกแก้จาก พ.ศ. จะไม่เขียนไฟล์จนกว่าจะยืนยัน ImageIO แก้วันที่ในไฟล์เมื่อทำได้ ไม่เช่นนั้น Ersatz เขียนไฟล์ `.xmp` คู่กัน วันที่เดิมเก็บไว้ใน checkpoint
+
+## คีย์บอร์ดและเมาส์
+
+| ปุ่มหรือท่าทาง | การทำงาน |
+| --- | --- |
+| Space | เปิดหรือปิดตัวดู |
+| Return หรือ Enter | เปิดตัวดู |
+| Esc | ปิดตัวดู |
+| ลูกศรซ้าย / ขวา | รายการก่อนหน้า / ถัดไป |
+| ลูกศรขึ้น / ลง | เลื่อนทีละแถวในตาราง หรือในรายการ |
+| Command-[ / Command-] | ย้อนกลับ / ไปข้างหน้า |
+| ปุ่มเมาส์ 4 / 5, ปัดซ้าย / ขวา, ลูกศรบนแถบเครื่องมือ | ย้อนกลับ / ไปข้างหน้า |
+| Command-O | Add Folder… |
+| Command-Delete | เอาโฟลเดอร์ที่เลือกออกจากคลัง |
+| Command-I | แสดงหรือซ่อนแผงข้อมูล |
+| Command-1 / Command-2 | ตาราง / รายการ |
+| Command-+ / Command-- | ภาพย่อใหญ่ขึ้น / เล็กลง |
+| Command-R | ทำดัชนีใหม่ |
+| Command-. | Stop Analyzing |
+| Command-Shift-H | History |
+| Command-, | Settings |
+
+Analyze Library, Move to Trash… และ Fix Buddhist-Era Dates… ไม่มีปุ่มลัด การย้อนกลับและไปข้างหน้าทำงานแบบ Finder คือย้ายระหว่างที่ที่เคยเปิด และการเปิดตัวดูนับเป็นหนึ่งขั้น ย้อนกลับจึงปิดตัวดู และไปข้างหน้าเปิดอีกครั้ง การเปลี่ยนรายการด้วยปุ่มลูกศรไม่เพิ่มขั้น
+
+## Settings
+
+Settings (Command-,) มีสองตัวเลือก:
+
+- **ffmpeg**: พาธที่กำหนดเอง เว้นว่างเพื่อค้นที่ `/opt/homebrew/bin` แล้ว `/usr/local/bin` แล้ว `PATH`
+- **Playback cache**: 1 ถึง 100 GB (ค่าเริ่มต้น 5 GB) เมื่อวิดีโอที่แปลงแล้วเกินขนาดนี้ ไฟล์ที่เก่าที่สุดจะถูกลบก่อน
+
+## ความเป็นส่วนตัว
+
+Ersatz ไม่มีโค้ดเครือข่าย ไม่ตรวจอัปเดต ไม่เก็บสถิติ ไม่มีบัญชี อ่านเฉพาะโฟลเดอร์ที่คุณเพิ่ม และเขียนแค่แคตตาล็อก แคช และบันทึกของตัวเอง (ด้านล่าง) โปรแกรมภายนอกที่เรียกมีแค่ ffmpeg และ ffprobe ที่คุณติดตั้งเอง การวิเคราะห์ด้วย Vision ทำบน Mac ของคุณ
 
 ## ข้อมูลถูกเก็บที่ไหน
 
 | สิ่งที่เก็บ | ที่อยู่ |
 | --- | --- |
-| แคตตาล็อก | `~/Library/Application Support/Ersatz/library.sqlite` |
+| แคตตาล็อกและ checkpoint | `~/Library/Application Support/Ersatz/library.sqlite` |
 | ภาพย่อ | `~/Library/Caches/Ersatz/Thumbnails` |
 | แคชสำหรับเล่นวิดีโอ | `~/Library/Caches/Ersatz/Playback` |
-| จุดตรวจ (checkpoint) | `~/Library/Application Support/Ersatz/Checkpoints` |
 | บันทึกการทำงาน | `~/Library/Logs/Ersatz/activity.log` |
-
-การเอาโฟลเดอร์ออกจากคลังไม่ลบไฟล์ต้นฉบับ
-
-## วิธีใช้หน้าต่าง
-
-แถบด้านข้างมีสี่ส่วน:
-
-- **Library** — โฟลเดอร์ที่เพิ่ม และไดเรกทอรีภายใน ตารางภาพยังแสดงโฟลเดอร์ย่อยเป็นปก: รูปเดียว หรือสามรูปแรกวางซ้อนเอียงเล็กน้อย โฟลเดอร์ที่ไม่มีรูปใช้ไอคอนโฟลเดอร์ธรรมดา
-- **Date Taken** — ปีแล้วเดือน วันที่ถ่ายถูกเก็บเป็นปฏิทินเกรกอเรียน ถ้าปีใน EXIF มากกว่า 2400 จะถือว่าเป็น พ.ศ. แล้วลบ 543 พร้อมจำไว้ว่าแก้แล้ว เพื่อเขียนวันที่ที่ถูกกลับลงไฟล์ได้
-- **Type** — Photos, RAW, Video, Audio
-- **Smart** — ไฟล์ซ้ำ (SHA-256 และ perceptual hash สำหรับรูปที่ใกล้เคียง), รูปเบลอ (ค่า Laplacian ปรับเกณฑ์ได้), ภาพหน้าจอ, คิวอาร์โค้ด, สลิปโอนเงินไทย, และไฟล์ที่วันที่ถูกแก้จาก พ.ศ.
-
-เรียงตามชื่อ วันที่ถ่าย วันที่แก้ไข ขนาดไฟล์ ความละเอียด codec หรือชนิดไฟล์ (ประเภทแล้วตามฟอร์แมต) ค่าที่ไม่มีจะอยู่ท้ายสุด ภาพย่อทุกใบมีป้ายความละเอียดและฟอร์แมต แผงข้อมูลคือคอลัมน์เดียวทางขวาของตาราง
-
-การทำดัชนีเขียนแถวพื้นฐานก่อน เพื่อให้ไฟล์โผล่ในตารางทันที แล้วค่อยอ่าน metadata พร้อมกันตามจำนวนตัวประมวลผล การวิเคราะห์ (แฮช ความคม และ Vision บน Mac) เป็นรอบถัดไป และข้ามไฟล์ที่ไม่เปลี่ยน
-
-| ปุ่ม | การทำงาน |
-| --- | --- |
-| Space | เปิดหรือปิดมุมมองขนาดเต็ม |
-| Esc | กลับจากมุมมองขนาดเต็ม |
-| ลูกศรซ้าย / ขวา | รายการก่อนหน้า / ถัดไป |
-| ลูกศรขึ้น / ลง | เลื่อนในตารางหรือรายการ |
-| Return | เปิดมุมมองขนาดเต็ม |
-| Command-O | เพิ่มโฟลเดอร์ |
-| Command-Delete | เอาโฟลเดอร์ที่เลือกออกจากคลัง |
-| Command-I | แสดงหรือซ่อนแผงข้อมูล |
-| Command-1 / Command-2 | ตาราง / รายการ |
-| Command-R | ทำดัชนีใหม่ |
-| Command-+ / Command-- | ขยายหรือย่อภาพย่อ |
-| Command-Shift-H | ประวัติ (History) |
-
-ในมุมมองภาพ ลากเพื่อเลื่อนภาพ ใช้ล้อเมาส์หรือบีบนิ้วเพื่อซูม ดับเบิลคลิกสลับระหว่างพอดีหน้าต่างกับขนาดจริง วิดีโอที่ AVFoundation เล่นได้ใช้ตัวเล่นของระบบ ไฟล์ MKV, WebM, AVI, FLV และ WMV ส่งให้ ffmpeg ที่ติดตั้งบน Mac เครื่องนี้ Ersatz ค้นที่ `/opt/homebrew/bin` แล้ว `/usr/local/bin` แล้ว `PATH` หรือพาธที่ตั้งใน Settings ถ้าไม่พบ ffmpeg ตัวดูจะบอกวิธีติดตั้งด้วย `brew install ffmpeg` ไม่ได้เงียบหาย ถ้าภาพเป็น H.264 หรือ HEVC และเสียงเป็น AAC, Apple Lossless, MP3, AC-3, E-AC-3 หรือไม่มีเสียง จะ remux แบบไม่สูญเสีย (`-c copy`, HEVC ติดแท็ก `hvc1`, `-movflags +faststart`) เป็น MP4 ในแคช นอกนั้นจะแปลงด้วย VideoToolbox (`h264_videotoolbox` หรือ `hevc_videotoolbox`) และเสียงเป็น AAC พร้อมแถบความคืบหน้าและปุ่มยกเลิก แคชอ้างอิงจากพาธ ขนาด และเวลาแก้ไข ค่าเริ่มต้น 5 GB ไฟล์ต้นฉบับไม่ถูกแก้ เสียงมีปุ่มเล่น หยุดชั่วคราว และแถบเลื่อนเวลา ปุ่มลูกศรใช้เปลี่ยนรายการ ไม่ได้ใช้กรอวิดีโอ
-
-โฟลเดอร์ถูกเฝ้าด้วย FSEvents เมื่อมีไฟล์เปลี่ยน โปรแกรมจะทำดัชนีแบบส่วนเพิ่ม: ไฟล์ที่ขนาดและเวลาแก้ไขเท่าเดิมจะถูกข้าม ไฟล์ใหม่หรือไฟล์ที่แก้จะถูกอ่านใหม่ และไฟล์ที่หายไปจะถูกเอาออกจากแคตตาล็อก
-
-คำสั่ง Fix Buddhist-Era Dates… แสดงไฟล์ที่ปีถูกตีความเป็น พ.ศ. จะไม่เขียนไฟล์จนกว่าจะยืนยัน วันที่เดิมถูกเก็บใน checkpoint (เฉพาะ metadata ไม่ได้ก็อปปี้ไฟล์) ImageIO อัปเดตในไฟล์ได้เมื่อทำได้ ไม่งั้นจะเขียนไฟล์ `.xmp` คู่กัน การย้ายไฟล์ซ้ำไปถังขยะใช้ `NSWorkspace.recycle` และจำ URL ในถังขยะ ถ้าภายหลังมีการแก้เนื้อไฟล์ ต้นฉบับจะถูก clone ด้วย `FileManager.copyItem` (บน APFS เกือบไม่กินพื้นที่) checkpoint ที่เก่ากว่า 30 วันจะถูกลบ และหน้าต่าง History กำหนดเพดานพื้นที่สำรองได้ ทุกการเปลี่ยนถูกเขียนลง activity log ด้วย
-
-## โครงสร้างโปรเจกต์
-
-```
-Package.swift
-Sources/CSQLite/                  module map ของ SQLite ในระบบ
-Sources/ErsatzCore/               แคตตาล็อก ตัวอ่าน metadata ดัชนี การเรียง
-Sources/Ersatz/                   แอป SwiftUI (macOS)
-Tests/ErsatzCoreTests/            เทสและไฟล์ตัวอย่างที่สร้างขึ้น
-Resources/Info.plist
-scripts/bundle.sh
-```
-
-SQLite ลิงก์จากไลบรารีของระบบ (`libsqlite3`) ไม่ได้ใช้ wrapper ของบุคคลที่สาม เพื่อให้ `ErsatzCore` แปลได้ทั้งบน Linux และ macOS ด้วยโค้ดชุดเดียวกัน
-
-ข้อมูลที่อ่านจากส่วนหัวไฟล์ได้ (JPEG EXIF, PNG, GIF, BMP, RAW ที่เป็น TIFF, WAV, AIFF, FLAC, MP3 และกล่อง MP4/QuickTime) ถูกแยกใน `ErsatzCore` บน Mac, ImageIO, AVFoundation และ Core Image เติมส่วนที่ขาด: ImageIO สำหรับภาพนิ่งและ metadata ของ RAW, Core Image (`CIRAWFilter`) ตอนแสดงไฟล์ RAW, AVFoundation สำหรับความยาวและ codec, และ QuickLook สำหรับภาพย่อของวิดีโอและเสียง สำหรับ MKV, WebM, AVI, FLV และ WMV การทำดัชนีเรียก ffprobe ของผู้ใช้ (ไม่ได้ฝังไบนารี) เพื่ออ่านความละเอียด codec และความยาว และภาพย่อคือหนึ่งเฟรมจาก ffmpeg ถ้าไม่ได้ติดตั้ง ffprobe ไฟล์เหล่านี้ยังอยู่ในแคตตาล็อกเป็น Video หลังติดตั้งแล้วให้ทำดัชนีใหม่เพื่อเติมรายละเอียด
-
-## สิ่งที่ตรวจแล้วในสภาพแวดล้อมนี้
-
-บน Linux ด้วย Swift 6.3 คำสั่ง `swift test` ผ่าน **44 เทส** รวมการแก้ปี พ.ศ. การเรียงตามชนิดไฟล์ SHA-256 perceptual hash ความคม ฮิวริสติกภาพหน้าจอและสลิปธนาคาร การจัดกลุ่มไฟล์ซ้ำ ปกโฟลเดอร์ checkpoint บันทึก activity การหา ffmpeg/ffprobe แผนจาก JSON ของ ffprobe อาร์กิวเมนต์ remux/transcode ตัวอ่านความคืบหน้า และ LRU ของแคชสำหรับเล่นวิดีโอ เทสชุดนี้ไม่ได้รัน ffmpeg จริง รวมถึงเบนช์มาร์กดัชนี 40 ไฟล์ JPEG เล็ก ๆ เวลาที่วัดได้คือ อ่านส่วนหัวทีละไฟล์ **0.002 วินาที** ใส่แคตตาล็อก **0.005 วินาที** และดัชนีสองรอบทั้งก้อน **0.007 วินาที** ไฟล์ตัวอย่างเล็กเกินกว่าพูลเธรดจะเร็วกว่าการอ่านตรง ๆ จุดที่ได้จริงคือแถวโผล่ในตารางก่อน metadata และจำนวนงานเท่ากับจำนวนตัวประมวลผลสำหรับ ImageIO กับ AVFoundation บน Mac
-
-`swift build` บน Linux แปลแพ็กเกจได้ ไบนารี `Ersatz` บนระบบนั้นจะบอกเพียงว่าแอปต้องใช้ macOS
-
-ส่วน SwiftUI ยังไม่ได้แปลและยังไม่ได้เปิดบน Mac เพราะสภาพแวดล้อมนี้ไม่มี macOS SDK ให้ build บน Mac ตามคำสั่งด้านบน หากคอมไพเลอร์แจ้งข้อผิดพลาด ส่งบันทึกนั้นมาได้
 
 ## ข้อจำกัดที่รู้แล้ว
 
-- แอปไม่ได้ใส่ sandbox แต่ยังสร้างและกู้ security-scoped bookmark ไว้ เพื่อให้เปิดโฟลเดอร์เดิมอีกครั้งได้
-- ไม่ตาม symbolic link ข้ามไฟล์ที่ซ่อน ไฟล์ AppleDouble ที่ขึ้นต้นด้วย `._` และไม่เข้าไปใน bundle
-- ถ้าสองโฟลเดอร์ในคลังซ้อนกัน รอบดัชนีล่าสุดจะเป็นเจ้าของพาธนั้น
-- ตัวดูภาพถอดรหัสภาพนิ่งและ RAW ไม่เกินเพดานพิกเซล (ด้านยาวประมาณ 3200 เมื่อให้พอดีหน้าต่าง และ 8192 เมื่อขอดูขนาดจริง) เพื่อไม่ให้ไฟล์ใหญ่มากกินหน่วยความจำทั้งไฟล์
-- HEIC, CR3 และฟอร์แมตที่ตัวอ่านแบบพกพายังอ่านไม่ครบ จะอาศัย ImageIO หรือ AVFoundation บน macOS ส่วน MKV, WebM, AVI, FLV และ WMV ต้องติดตั้ง ffmpeg แยก ถ้าไม่มี ไฟล์จะยังแสดงเป็น Video และตัวดูจะบอกวิธีติดตั้ง
-- เมื่อไฟล์ในโฟลเดอร์เปลี่ยน จะสแกนโฟลเดอร์นั้นใหม่แบบส่วนเพิ่ม ไม่ได้แก้เฉพาะไฟล์เดียวแบบแยก
-- ไฟล์ภาพย่อที่ค้างจะไม่ถูกลบเมื่อรายการออกจากแคตตาล็อก
-- วันที่ถ่ายถูกเก็บเป็น ค.ศ. แผงข้อมูลยังจัดรูปแบบตามภาษาของเครื่อง ดังนั้นปฏิทิน พ.ศ. บน Mac ภาษาไทยจะแสดงปีที่แก้แล้วเป็น พ.ศ. ไม่ใช่ พ.ศ. ที่บวกซ้ำ
-- คิวอาร์โค้ดและข้อความสลิปใช้ Vision และทำงานบน macOS เท่านั้น กฎคำสำคัญอยู่ใน ErsatzCore
-- ยังไม่มีอัลบั้ม คะแนน หรือเครื่องมือแต่งรูปทั่วไป
-- บันเดิลเซ็นแบบ ad-hoc ยังไม่มีลายเซ็น Developer ID
-- มีหน้าต่างเดียว Space ใช้สลับมุมมองขนาดเต็ม การหยุดเล่นใช้ปุ่มบนหน้าจอ
+- แอปไม่ได้อยู่ใน sandbox แต่ยังสร้างและกู้ security-scoped bookmark เพื่อให้ sandbox ในอนาคตยังเข้าถึงโฟลเดอร์ได้
+- ไม่ตาม symbolic link ข้ามไฟล์ซ่อน ไฟล์ AppleDouble `._` และ bundle
+- ถ้าสองโฟลเดอร์ในคลังซ้อนกัน รอบดัชนีล่าสุดเป็นเจ้าของพาธนั้น
+- เมื่อมีไฟล์เปลี่ยน จะสแกนโฟลเดอร์นั้นใหม่แบบส่วนเพิ่ม ไม่ได้แก้เฉพาะไฟล์เดียว
+- ไฟล์ภาพย่อที่ค้างไม่ถูกลบเมื่อรายการออกจากแคตตาล็อก
+- HEIC, CR3 และฟอร์แมตที่ตัวอ่านแบบพกพาอ่านไม่ครบ อาศัย ImageIO หรือ AVFoundation
+- วันที่ถ่ายเก็บเป็น ค.ศ. และแสดงตามปฏิทินของ Mac ดังนั้นปฏิทินพุทธจะแสดงปีที่แก้แล้วเป็น พ.ศ.
+- ยังไม่มีอัลบั้ม คะแนน หรือการแต่งรูป
+- บันเดิลเซ็นแบบ ad-hoc ไม่มีลายเซ็น Developer ID หรือ notarization
+- มีหน้าต่างเดียว
+
+## การพัฒนา
+
+โครงสร้างโปรเจกต์ดูที่ส่วนภาษาอังกฤษด้านบน `ErsatzCore` แปลบน Linux ได้ด้วย (`sudo apt install libsqlite3-dev` แล้ว `swift test`) เทสส่วนใหญ่จึงรันได้โดยไม่ต้องมี Mac ส่วนหน้าต่างแอปใช้ได้เฉพาะ macOS SQLite ใช้ไลบรารีของระบบ ไม่ได้ใช้ wrapper ภายนอก
+
+การทำดัชนีเขียนแถวพื้นฐานก่อนเพื่อให้ไฟล์โผล่ทันที แล้วอ่าน metadata ด้วยกลุ่มงาน (อย่างน้อยสองงาน หนึ่งงานต่อตัวประมวลผล) ภาพย่อ (ไม่เกินครึ่งหนึ่งของจำนวนคอร์ อย่างน้อยสี่งาน) และการวิเคราะห์ (ไม่เกินครึ่งหนึ่ง อย่างน้อยหนึ่งงาน) ใช้ประตูงานร่วมกัน และภาพย่อได้ก่อนเสมอ ส่วนหัวไฟล์ (JPEG EXIF, PNG, GIF, BMP, RAW แบบ TIFF, WAV, AIFF, FLAC, MP3, MP4/QuickTime) อ่านใน `ErsatzCore` บน Mac ใช้ ImageIO, AVFoundation, Core Image และ QuickLook เติมส่วนที่ขาด
+
+การเล่นผ่าน ffmpeg: ถ้าภาพเป็น H.264 หรือ HEVC และเสียงเป็น AAC, Apple Lossless, MP3, AC-3, E-AC-3 หรือไม่มีเสียง จะ remux แบบไม่สูญเสีย (`-c copy`, HEVC ติดแท็ก `hvc1`, `-movflags +faststart`) นอกนั้นแปลงด้วย VideoToolbox (`h264_videotoolbox` หรือ `hevc_videotoolbox`) และ AAC แคชอ้างอิงจากพาธ ขนาด และเวลาแก้ไข
+
+**การทดสอบ** `swift test` รัน 120 เทสบน macOS (รอบ 11) ครอบคลุมแคตตาล็อกและการย้ายสคีมา วันที่ พ.ศ. การเรียง แฮชและการจัดกลุ่มไฟล์ซ้ำ คะแนนความเบลอ กฎภาพหน้าจอและสลิป ตัววางแผนการวิเคราะห์ ประวัติย้อนกลับ/ไปข้างหน้า checkpoint และการลบ อาร์กิวเมนต์ ffmpeg และตัวอ่านความคืบหน้า และเพดานแคชวิดีโอ เทส ffmpeg ไม่ได้รัน ffmpeg จริง
+
+**แคตตาล็อกทดลอง** สำหรับถ่ายภาพหน้าจอหรือทดลอง เปิดแอปด้วย `ERSATZ_DATA_DIR=/tmp/ErsatzDemoData` หรือ `-ErsatzDataDir /tmp/ErsatzDemoData` แคตตาล็อก แคช และบันทึกจะอยู่ที่นั่นแทน `~/Library` และเฉพาะเมื่อกำหนดโฟลเดอร์ข้อมูลแล้ว จึงใช้ `-ErsatzAddFolder`, `-ErsatzStartFilter`, `-ErsatzOpenViewer`, `-ErsatzWindowSize` และ `-ErsatzSnapshot` ได้ ภาพหน้าจอใน README นี้ทำจากภาพที่สร้างขึ้น ไม่ใช่รูปจริง
+
+## แรงบันดาลใจและเครดิต
+
+Ersatz ได้แรงบันดาลใจจาก [Diffractor](https://diffractor.com) โปรแกรมจัดระเบียบรูปและวิดีโอบน Windows ที่เร็วและฟรี โดย Zac Walker ([ซอร์สโค้ดบน GitHub](https://github.com/ZacWalk/diffractor)) ซอร์สโค้ดของ Diffractor ใช้สัญญาอนุญาต LGPL 2.1 ขึ้นไป และไบนารีที่เผยแพร่ใช้ LGPL 3.0 ขึ้นไป Diffractor เป็นที่มาของแนวคิด: คลังภาพในเครื่องจากโฟลเดอร์ปกติ ตารางภาพย่อที่เร็ว ตัวดูเดียวสำหรับภาพ วิดีโอ และเสียง และเครื่องมืออย่างการหาไฟล์ซ้ำ
+
+Ersatz เป็นแอปแยกต่างหากที่เขียนใหม่ทั้งหมดด้วย Swift และ SwiftUI สำหรับ macOS ไม่ใช่การพอร์ต Diffractor และไม่มีโค้ด ไอคอน หรือไฟล์อื่นใดของ Diffractor อินเทอร์เฟซใช้ SF Symbols ของ Apple ชื่อ Ersatz แปลว่า "ของทดแทน" เท่านั้น Ersatz ไม่มีส่วนเกี่ยวข้อง ไม่ได้รับการสนับสนุน และไม่ได้รับการรับรองจาก Zac Walker หรือโครงการ Diffractor บน Windows ใช้ Diffractor เองเป็นตัวเลือกที่เหมาะที่สุด
 
 ## สัญญาอนุญาต
 

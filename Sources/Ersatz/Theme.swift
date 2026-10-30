@@ -43,6 +43,25 @@ enum LibraryFilter: Hashable, Sendable {
     case duplicates
     case buddhistDates
 
+    /// A sidebar place by the name `-ErsatzStartFilter` uses (developer launches only).
+    init?(devName: String) {
+        switch devName.lowercased() {
+        case "all", "allmedia": self = .all
+        case "photos": self = .kind(.photo)
+        case "raw": self = .kind(.raw)
+        case "video", "videos": self = .kind(.video)
+        case "audio": self = .kind(.audio)
+        case "screenshots": self = .screenshots
+        case "qr", "qrcodes": self = .qrCodes
+        case "bankslips", "slips": self = .bankSlips
+        case "blurry": self = .blurry
+        case "duplicates": self = .duplicates
+        case "buddhist", "buddhistdates": self = .buddhistDates
+        case "unknowndate": self = .unknownDate
+        default: return nil
+        }
+    }
+
     /// What this filter needs analyzed before it can show anything. Empty for plain places.
     var analysisParts: AnalysisParts {
         switch self {

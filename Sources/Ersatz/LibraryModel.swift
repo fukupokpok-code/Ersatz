@@ -261,6 +261,7 @@ final class LibraryModel {
             for folder in folders where !offlineFolderIDs.contains(folder.id) {
                 enqueue(folder.id, force: false)
             }
+            await applyDevLaunchOptions()
         } catch {
             present(error)
         }
@@ -268,6 +269,70 @@ final class LibraryModel {
         installKeys()
         trimPlaybackCache()
         await pruneCheckpoints()
+    }
+
+    /// Developer-only (see `DevLaunchOptions`): with a throwaway data directory, add the
+    /// given folders, open a sidebar place and optionally the viewer. Does nothing on a
+    /// normal launch.
+    private func applyDevLaunchOptions() async {
+        let options = DevLaunchOptions.current
+        guard let root = options.dataDirectory else { return }
+        AppLog.app.notice("dev: data directory \(root.path, privacy: .public)")
+        for url in options.addFolders where !folders.contains(where: { $0.path == url.path }) {
+            await addFolder(url)
+        }
+        if let name = options.startFilter, let place = LibraryFilter(devName: name) {
+            filter = place
+        }
+        guard options.openViewer || options.windowSize != nil || options.snapshotURL != nil else { return }
+        Task { @MainActor [weak self] in
+            if let size = options.windowSize {
+                for _ in 0..<50 {
+                    if let window = self?.hostWindow {
+                        var frame = window.frame
+                        frame.origin.y += frame.height - CGFloat(size.height)
+                        frame.size = CGSize(width: size.width, height: size.height)
+                        window.setFrame(frame, display: true)
+                        break
+                    }
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+            }
+            if options.openViewer {
+                // Indexing fills the grid a moment after launch; wait for it, up to 30 s.
+                for _ in 0..<300 {
+                    guard let self else { return }
+                    if !self.items.isEmpty {
+                        self.openViewer()
+                        break
+                    }
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+            }
+            if let url = options.snapshotURL {
+                try? await Task.sleep(for: .seconds(options.snapshotDelay))
+                self?.writeDevSnapshot(to: url)
+            }
+        }
+    }
+
+    /// Draws the main window, title bar and toolbar included, into a PNG. Developer-only.
+    private func writeDevSnapshot(to url: URL) {
+        guard let window = hostWindow, let frameView = window.contentView?.superview else {
+            AppLog.app.error("dev: no window to snapshot")
+            return
+        }
+        let bounds = frameView.bounds
+        guard let rep = frameView.bitmapImageRepForCachingDisplay(in: bounds) else { return }
+        frameView.cacheDisplay(in: bounds, to: rep)
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            guard let data = rep.representation(using: .png, properties: [:]) else { return }
+            try data.write(to: url, options: .atomic)
+            AppLog.app.notice("dev: wrote snapshot \(url.path, privacy: .public)")
+        } catch {
+            AppLog.app.error("dev: snapshot failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     func installKeys() {
